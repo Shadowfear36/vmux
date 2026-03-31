@@ -1,0 +1,83 @@
+.browser-pane-wrapper {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #1a1b26;
+}
+
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: #16161e;
+  border-bottom: 1px solid #2a2b3d;
+  height: 36px;
+  flex-shrink: 0;
+}
+
+.browser-nav-btn {
+  background: none;
+  border: none;
+  color: #a9b1d6;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: background 0.1s;
+}
+
+.browser-nav-btn:hover {
+  background: #2a2b3d;
+  color: #c0caf5;
+}
+
+.browser-url-input {
+  flex: 1;
+  background: #24283b;
+  border: 1px solid #2a2b3d;
+  border-radius: 4px;
+  color: #c0caf5;
+  font-size: 13px;
+  padding: 3px 8px;
+  outline: none;
+  font-family: inherit;
+}
+
+.browser-url-input:focus {
+  border-color: #7aa2f7;
+  background: #1f2335;
+}
+
+.browser-go-btn {
+  background: #3d59a1;
+  border: none;
+  border-radius: 4px;
+  color: #c0caf5;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 10px;
+  transition: background 0.1s;
+}
+
+.browser-go-btn:hover {
+  background: #7aa2f7;
+  color: #1a1b26;
+}
+
+.browser-cdp-hint {
+  font-size: 10px;
+  color: #565f89;
+  padding: 0 4px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.browser-pane-surface {
+  flex: 1;
+  width: 100%;
+  /* Transparent — the WebView2 child renders here */
+  background: transparent;
+}

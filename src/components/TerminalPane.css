@@ -1,0 +1,38 @@
+.terminal-pane-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #1a1b26;
+  border: 1px solid #292e42;
+  border-radius: 2px;
+  overflow: hidden;
+  transition: border-color 0.1s;
+}
+
+.terminal-pane-focused {
+  border-color: #7aa2f7;
+}
+
+/* The cmux-style notification ring — glows blue when an agent needs attention */
+.terminal-pane-wrapper:has(.terminal-meta-notified) {
+  border-color: #7dcfff;
+  box-shadow: 0 0 0 1px #7dcfff44, inset 0 0 8px #7dcfff11;
+}
+
+.terminal-pane-surface {
+  flex: 1;
+  position: relative;
+  background: #1a1b26;
+  cursor: text;
+  min-height: 0;
+}
+
+/* Invisible div that captures keyboard input.
+   The native HWND renders on top; this div holds focus for key events. */
+.terminal-pane-input {
+  position: absolute;
+  inset: 0;
+  outline: none;
+  opacity: 0;
+  pointer-events: none; /* clicks go through to parent for focusSurface */
+}

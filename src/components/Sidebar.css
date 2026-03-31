@@ -1,0 +1,367 @@
+/* Tokyo Night sidebar */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #16161e;
+  border-right: 1px solid #292e42;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+  color: #a9b1d6;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 8px;
+  border-bottom: 1px solid #292e42;
+}
+
+.sidebar-logo {
+  font-weight: 700;
+  font-size: 14px;
+  color: #7aa2f7;
+  letter-spacing: 0.1em;
+}
+
+.workspace-select {
+  flex: 1;
+  background: #1a1b26;
+  border: 1px solid #292e42;
+  color: #a9b1d6;
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.sidebar-section {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.sidebar-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 12px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #565f89;
+  letter-spacing: 0.08em;
+}
+
+.sidebar-add-btn {
+  background: none;
+  border: none;
+  color: #565f89;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+.sidebar-add-btn:hover {
+  color: #7aa2f7;
+  background: #292e42;
+}
+
+/* Tab rows */
+.tab-row {
+  display: flex;
+  align-items: center;
+  padding: 5px 12px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background 0.1s;
+  gap: 6px;
+}
+
+.tab-row:hover {
+  background: #1f2335;
+}
+
+.tab-row-active {
+  background: #1f2335;
+  border-left-color: #7aa2f7;
+  color: #c0caf5;
+}
+
+.tab-row-notified {
+  border-left-color: #7dcfff !important;
+}
+
+.tab-icon {
+  flex-shrink: 0;
+  margin-right: 6px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.tab-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-notification-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #7dcfff;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px #7dcfff88;
+}
+
+.tab-close-btn {
+  background: none;
+  border: none;
+  color: #565f89;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 0.1s;
+  line-height: 1;
+}
+
+.tab-row:hover .tab-close-btn {
+  opacity: 1;
+}
+
+/* Agent launcher buttons */
+.agent-launch-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  color: #a9b1d6;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+
+.agent-launch-btn:hover {
+  background: #292e42;
+}
+
+.agent-launch-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+/* Terminal meta bar */
+.terminal-meta-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  background: #1a1b26;
+  border-bottom: 1px solid #292e42;
+  font-size: 11px;
+  color: #565f89;
+  min-height: 22px;
+}
+
+.terminal-meta-notified {
+  background: #1a1b26;
+  border-bottom-color: #7dcfff55;
+}
+
+.notification-badge {
+  background: #7dcfff22;
+  border: 1px solid #7dcfff55;
+  border-radius: 3px;
+  color: #7dcfff;
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.git-branch {
+  color: #9ece6a;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.git-dirty { color: #e0af68; }
+.git-ahead { color: #7aa2f7; }
+.git-behind { color: #f7768e; }
+
+.working-dir {
+  color: #565f89;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-footer {
+  padding: 8px;
+  border-top: 1px solid #292e42;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-footer-row {
+  display: flex;
+  gap: 4px;
+}
+
+.sidebar-footer-row .sidebar-footer-btn {
+  flex: 1;
+}
+
+.sidebar-help-btn {
+  font-size: 10px !important;
+  color: #565f89 !important;
+  text-align: center !important;
+}
+
+.sidebar-footer-btn {
+  width: 100%;
+  background: none;
+  border: 1px solid #292e42;
+  color: #565f89;
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+
+.sidebar-footer-btn:hover,
+.sidebar-footer-btn.active {
+  background: #1f2335;
+  color: #a9b1d6;
+  border-color: #7aa2f7;
+}
+
+/* Shell picker */
+.shell-picker-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.shell-picker-arrow {
+  font-size: 10px;
+  padding: 0 3px;
+}
+
+.shell-picker-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 100;
+  background: #1f2335;
+  border: 1px solid #292e42;
+  border-radius: 4px;
+  min-width: 160px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  overflow: hidden;
+}
+
+.shell-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: #a9b1d6;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.shell-picker-item:hover {
+  background: #292e42;
+  color: #c0caf5;
+}
+
+.shell-picker-icon {
+  font-size: 11px;
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+/* Workspace context menu */
+.workspace-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 100;
+  background: #1f2335;
+  border: 1px solid #292e42;
+  border-radius: 4px;
+  min-width: 140px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  overflow: hidden;
+}
+
+.workspace-menu-item {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  color: #a9b1d6;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.workspace-menu-item:hover { background: #292e42; }
+
+.workspace-menu-delete { color: #f7768e; }
+.workspace-menu-delete:hover { background: #f7768e22; }
+
+.workspace-menu-rename {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.workspace-rename-input {
+  background: #1a1b26;
+  border: 1px solid #292e42;
+  color: #a9b1d6;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  outline: none;
+  font-family: inherit;
+}
+.workspace-rename-input:focus { border-color: #7aa2f7; }
+
+.workspace-selector {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  margin-left: 8px;
+  position: relative;
+}

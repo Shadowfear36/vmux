@@ -6,6 +6,66 @@
   background: #1a1b26;
 }
 
+/* Browser tab bar */
+.browser-tabbar {
+  display: flex;
+  align-items: center;
+  background: #16161e;
+  border-bottom: 1px solid #292e42;
+  height: 28px;
+  overflow-x: auto;
+  flex-shrink: 0;
+  gap: 1px;
+  padding: 0 4px;
+}
+
+.browser-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  height: 100%;
+  cursor: pointer;
+  font-size: 11px;
+  color: #565f89;
+  border-right: 1px solid #292e42;
+  white-space: nowrap;
+  max-width: 160px;
+  transition: background 0.1s, color 0.1s;
+}
+.browser-tab:hover { background: #1f2335; color: #a9b1d6; }
+.browser-tab-active { background: #1f2335; color: #c0caf5; border-bottom: 2px solid #7aa2f7; }
+
+.browser-tab-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.browser-tab-close {
+  background: none;
+  border: none;
+  color: #565f89;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.browser-tab:hover .browser-tab-close { opacity: 1; }
+.browser-tab-close:hover { color: #f7768e; }
+
+.browser-tab-new {
+  background: none;
+  border: none;
+  color: #565f89;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 6px;
+  line-height: 1;
+}
+.browser-tab-new:hover { color: #7aa2f7; }
+
 .browser-toolbar {
   display: flex;
   align-items: center;
@@ -67,17 +127,21 @@
   color: #1a1b26;
 }
 
-.browser-cdp-hint {
-  font-size: 10px;
-  color: #565f89;
-  padding: 0 4px;
+.browser-devtools-btn {
+  font-size: 10px !important;
+  color: #565f89 !important;
+  border: 1px solid #292e42;
+  border-radius: 3px;
+  padding: 2px 6px !important;
   white-space: nowrap;
-  user-select: none;
+}
+.browser-devtools-btn:hover {
+  color: #7aa2f7 !important;
+  border-color: #7aa2f7;
 }
 
 .browser-pane-surface {
   flex: 1;
   width: 100%;
-  /* Transparent — the WebView2 child renders here */
   background: transparent;
 }

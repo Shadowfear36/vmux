@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry } from './types';
+import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry, BrowserTabInfo } from './types';
 
 interface AppStore {
   // Shells
@@ -29,6 +29,8 @@ interface AppStore {
   // Browser
   showBrowser: boolean;
   browserUrl: string;
+  browserTabs: BrowserTabInfo[];
+  activeBrowserTabId: string | null;
 
   // UI state
   sidebarWidth: number;
@@ -52,11 +54,15 @@ interface AppStore {
   closeTerminal: (terminalId: string) => Promise<void>;
   setNotification: (terminalId: string, message: string) => void;
   clearNotification: (terminalId: string) => Promise<void>;
+  setTerminalCwd: (terminalId: string, cwd: string) => void;
   setTerminalTitle: (terminalId: string, title: string) => void;
 
   loadContext: (workspaceId?: string) => Promise<void>;
 
-  openBrowser: (bounds: PaneBounds, url?: string) => Promise<void>;
+  openBrowser: (bounds: PaneBounds, url?: string) => Promise<string>;
+  openBrowserTab: (bounds: PaneBounds, url?: string) => Promise<void>;
+  closeBrowserTab: (tabId: string) => Promise<void>;
+  switchBrowserTab: (tabId: string) => Promise<void>;
   setBrowserBounds: (bounds: PaneBounds) => Promise<void>;
   browserNavigate: (url: string) => void;
   browserBack: () => void;
@@ -64,6 +70,7 @@ interface AppStore {
   browserReload: () => void;
   browserEvaluate: (js: string) => Promise<string>;
   browserGetSource: () => Promise<string>;
+  browserOpenDevtools: () => void;
   showBrowserPane: () => void;
   hideBrowserPane: () => void;
   closeBrowser: () => Promise<void>;
@@ -75,6 +82,10 @@ interface AppStore {
   deleteWorkspace: (workspaceId: string) => Promise<void>;
   cycleTab: (direction: 'next' | 'prev') => void;
 
+  // Pane layout
+  reorderPanes: (workspaceId: string, tabId: string, paneIds: string[]) => Promise<void>;
+  setTabDirection: (workspaceId: string, tabId: string, direction: 'horizontal' | 'vertical') => Promise<void>;
+
   // Context CRUD
   createContext: (title: string, content: string, tags?: string[]) => Promise<ContextEntry>;
   updateContextEntry: (id: string, title?: string, content?: string, tags?: string[]) => Promise<void>;
@@ -83,6 +94,10 @@ interface AppStore {
   // File tree
   showFileTree: boolean;
   toggleFileTree: () => void;
+
+  // Git diff
+  showGitDiff: boolean;
+  toggleGitDiff: () => void;
 
   setSidebarWidth: (w: number) => void;
   toggleContext: () => void;
@@ -143,9 +158,12 @@ export const useStore = create<AppStore>((set, get) => ({
   contextEntries: [],
   showBrowser: false,
   browserUrl: 'about:blank',
+  browserTabs: [],
+  activeBrowserTabId: null,
   sidebarWidth: 240,
   showContext: false,
   showFileTree: false,
+  showGitDiff: false,
 
   loadWorkspaces: async () => {
     const workspaces: Workspace[] = await invoke('list_workspaces');
@@ -179,13 +197,78 @@ export const useStore = create<AppStore>((set, get) => ({
   createWorkspace: async (name) => {
     const ws: Workspace = await invoke('create_workspace', { name });
     set(s => ({ workspaces: [...s.workspaces, ws] }));
+
+    // Switch to the new workspace and create an initial tab
+    await invoke('set_active_workspace', { workspaceId: ws.id });
+
+    // Hide all current terminals
+    const state = get();
+    for (const id of Object.keys(state.terminals)) {
+      invoke('hide_terminal', { terminalId: id }).catch(() => {});
+    }
+
+    const tab: Tab = await invoke('add_tab', { workspaceId: ws.id, name: 'Terminal' });
+    set(s => ({
+      workspaces: s.workspaces.map(w =>
+        w.id === ws.id ? { ...w, tabs: [tab], active_tab_id: tab.id } : w
+      ),
+      activeWorkspaceId: ws.id,
+      activeTabId: tab.id,
+      focusedTerminalId: null,
+    }));
     return ws;
   },
 
   setActiveWorkspace: async (id) => {
+    const prev = get();
+
+    // Hide all terminals belonging to the current workspace
+    if (prev.activeWorkspaceId) {
+      const oldWs = prev.workspaces.find(w => w.id === prev.activeWorkspaceId);
+      if (oldWs) {
+        for (const tab of oldWs.tabs) {
+          for (const pane of tab.panes) {
+            if (pane.kind.type === 'terminal') {
+              invoke('hide_terminal', { terminalId: pane.kind.terminal_id }).catch(() => {});
+            }
+          }
+        }
+      }
+    }
+
     await invoke('set_active_workspace', { workspaceId: id });
     const ws = get().workspaces.find(w => w.id === id);
-    set({ activeWorkspaceId: id, activeTabId: ws?.active_tab_id ?? null });
+    set({ activeWorkspaceId: id, activeTabId: ws?.active_tab_id ?? null, focusedTerminalId: null });
+
+    // Restore/show terminals for the new workspace
+    if (ws && ws.tabs.some(t => t.panes.length > 0)) {
+      // Check if these terminals already exist in our store
+      const firstTerminalId = ws.tabs.flatMap(t => t.panes)
+        .find(p => p.kind.type === 'terminal')?.kind;
+      const alreadyLoaded = firstTerminalId?.type === 'terminal'
+        && prev.terminals[firstTerminalId.terminal_id];
+
+      if (alreadyLoaded) {
+        // Just show them
+        for (const tab of ws.tabs) {
+          if (tab.id !== ws.active_tab_id) continue;
+          for (const pane of tab.panes) {
+            if (pane.kind.type === 'terminal') {
+              invoke('show_terminal', { terminalId: pane.kind.terminal_id }).catch(() => {});
+            }
+          }
+        }
+        // Focus first terminal in active tab
+        const activeTab = ws.tabs.find(t => t.id === ws.active_tab_id);
+        const first = activeTab?.panes.find(p => p.kind.type === 'terminal');
+        if (first?.kind.type === 'terminal') {
+          set({ focusedTerminalId: first.kind.terminal_id });
+        }
+      } else {
+        // Need to spawn fresh PTYs
+        await get().restoreWorkspacePanes(id);
+      }
+    }
   },
 
   addTab: async (workspaceId, name) => {
@@ -274,9 +357,10 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   focusTerminal: (terminalId) => {
-    // Do NOT call invoke('focus_terminal') — that calls SetForegroundWindow on
-    // the HWND, stealing keyboard focus from our React WebView2 keyboard div.
     set({ focusedTerminalId: terminalId });
+    // Set Win32 keyboard focus on the terminal HWND so it receives keystrokes.
+    // All keyboard input is handled natively in the WndProc, not in JS.
+    invoke('focus_terminal', { terminalId }).catch(() => {});
   },
 
   showTerminal: (terminalId) => { invoke('show_terminal', { terminalId }); },
@@ -334,6 +418,19 @@ export const useStore = create<AppStore>((set, get) => ({
     }));
   },
 
+  setTerminalCwd: (terminalId, cwd) => {
+    set(s => {
+      const term = s.terminals[terminalId];
+      if (!term || term.working_dir === cwd) return s;
+      return {
+        terminals: {
+          ...s.terminals,
+          [terminalId]: { ...term, working_dir: cwd },
+        },
+      };
+    });
+  },
+
   setTerminalTitle: (terminalId, title) => {
     set(s => ({
       terminals: {
@@ -351,8 +448,50 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   openBrowser: async (bounds, url) => {
-    await invoke('open_browser', { bounds, url: url ?? null });
-    set({ showBrowser: true, browserUrl: url ?? 'about:blank' });
+    const tabId: string = await invoke('open_browser', { bounds, url: url ?? null });
+    const urlStr = url ?? 'about:blank';
+    set(s => ({
+      showBrowser: true,
+      browserUrl: urlStr,
+      browserTabs: [...s.browserTabs, { id: tabId, url: urlStr }],
+      activeBrowserTabId: tabId,
+    }));
+    return tabId;
+  },
+
+  openBrowserTab: async (bounds, url) => {
+    const tabId: string = await invoke('open_browser', { bounds, url: url ?? null });
+    const urlStr = url ?? 'about:blank';
+    set(s => ({
+      browserUrl: urlStr,
+      browserTabs: [...s.browserTabs, { id: tabId, url: urlStr }],
+      activeBrowserTabId: tabId,
+    }));
+  },
+
+  closeBrowserTab: async (tabId) => {
+    const tabs: BrowserTabInfo[] = await invoke('close_browser_tab', { tabId });
+    set(s => {
+      const showBrowser = tabs.length > 0 ? s.showBrowser : false;
+      const activeTab = tabs.find(t => t.id === s.activeBrowserTabId) ?? tabs[tabs.length - 1];
+      return {
+        browserTabs: tabs,
+        activeBrowserTabId: activeTab?.id ?? null,
+        browserUrl: activeTab?.url ?? 'about:blank',
+        showBrowser,
+      };
+    });
+  },
+
+  switchBrowserTab: async (tabId) => {
+    await invoke('switch_browser_tab', { tabId });
+    set(s => {
+      const tab = s.browserTabs.find(t => t.id === tabId);
+      return {
+        activeBrowserTabId: tabId,
+        browserUrl: tab?.url ?? s.browserUrl,
+      };
+    });
   },
 
   setBrowserBounds: async (bounds) => {
@@ -367,6 +506,7 @@ export const useStore = create<AppStore>((set, get) => ({
   browserBack: () => { invoke('browser_back'); },
   browserForward: () => { invoke('browser_forward'); },
   browserReload: () => { invoke('browser_reload'); },
+  browserOpenDevtools: () => { invoke('browser_open_devtools'); },
 
   browserEvaluate: (js) => {
     return new Promise((resolve, reject) => {
@@ -404,7 +544,7 @@ export const useStore = create<AppStore>((set, get) => ({
 
   closeBrowser: async () => {
     await invoke('close_browser');
-    set({ showBrowser: false });
+    set({ showBrowser: false, browserTabs: [], activeBrowserTabId: null });
   },
 
   toggleBrowser: () => set(s => ({ showBrowser: !s.showBrowser })),
@@ -479,7 +619,44 @@ export const useStore = create<AppStore>((set, get) => ({
     set(s => ({ contextEntries: s.contextEntries.filter(e => e.id !== id) }));
   },
 
+  reorderPanes: async (workspaceId, tabId, paneIds) => {
+    await invoke('reorder_panes', { workspaceId, tabId, paneIds });
+    set(s => ({
+      workspaces: s.workspaces.map(ws =>
+        ws.id === workspaceId
+          ? {
+              ...ws,
+              tabs: ws.tabs.map(t => {
+                if (t.id !== tabId) return t;
+                const reordered = paneIds
+                  .map(id => t.panes.find(p => p.id === id))
+                  .filter(Boolean) as Pane[];
+                return { ...t, panes: reordered };
+              }),
+            }
+          : ws
+      ),
+    }));
+  },
+
+  setTabDirection: async (workspaceId, tabId, direction) => {
+    await invoke('set_tab_direction', { workspaceId, tabId, direction });
+    set(s => ({
+      workspaces: s.workspaces.map(ws =>
+        ws.id === workspaceId
+          ? {
+              ...ws,
+              tabs: ws.tabs.map(t =>
+                t.id === tabId ? { ...t, direction } : t
+              ),
+            }
+          : ws
+      ),
+    }));
+  },
+
   toggleFileTree: () => set(s => ({ showFileTree: !s.showFileTree })),
+  toggleGitDiff: () => set(s => ({ showGitDiff: !s.showGitDiff })),
 
   setSidebarWidth: (w) => set({ sidebarWidth: w }),
   toggleContext: () => set(s => ({ showContext: !s.showContext })),

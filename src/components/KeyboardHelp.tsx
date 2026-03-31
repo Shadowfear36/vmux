@@ -5,8 +5,10 @@ type ShortcutItem = { section: string } | { key: string; desc: string };
 
 const SHORTCUTS: ShortcutItem[] = [
   { section: 'Panes' },
-  { key: 'Ctrl-A c', desc: 'Split new pane' },
+  { key: 'Ctrl-A c', desc: 'Split side-by-side' },
+  { key: 'Ctrl-A -', desc: 'Split stacked (top/bottom)' },
   { key: 'Ctrl-A d', desc: 'Close focused pane' },
+  { key: 'Drag pane', desc: 'Reorder panes via drag & drop' },
   { section: 'Tabs' },
   { key: 'Ctrl-A t', desc: 'New tab' },
   { key: 'Ctrl-A n', desc: 'Next tab' },
@@ -17,6 +19,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { key: 'Ctrl-A f', desc: 'Toggle file tree' },
   { section: 'Workspace' },
   { key: 'Ctrl-A w', desc: 'New workspace' },
+  { key: 'Ctrl-A g', desc: 'Toggle git diff panel' },
   { section: 'Help' },
   { key: 'Ctrl-A ?', desc: 'Toggle this help' },
 ];

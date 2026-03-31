@@ -38,7 +38,8 @@ static PREFIX_ACTIVE: AtomicBool = AtomicBool::new(false);
 struct WndProcData {
     msg_tx: mpsc::UnboundedSender<WindowMessage>,
     owner_hwnd: HWND,
-    pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Channel for queuing keyboard input — never blocks WndProc, never drops keys.
+    pty_input_tx: std::sync::mpsc::Sender<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -107,7 +108,11 @@ impl TerminalWindow {
     }
 
     pub fn focus(&self) {
-        unsafe { let _ = SetForegroundWindow(self.hwnd); }
+        unsafe {
+            // SetFocus gives keyboard focus within the app (WM_KEYDOWN goes to this HWND).
+            // SetForegroundWindow is too aggressive — it steals focus from other apps.
+            let _ = SetFocus(Some(self.hwnd));
+        }
     }
 
     #[allow(dead_code)]
@@ -136,10 +141,24 @@ unsafe fn create_window(
 ) -> Result<HWND> {
     register_window_class()?;
 
+    // Spawn a dedicated writer thread so WndProc never blocks or drops keys.
+    let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        while let Ok(data) = input_rx.recv() {
+            // Recover from mutex poisoning — the writer is still usable.
+            let mut w = match pty_writer.lock() {
+                Ok(w) => w,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = w.write_all(&data);
+            let _ = w.flush();
+        }
+    });
+
     let data = WndProcData {
         msg_tx,
         owner_hwnd: HWND(parent_hwnd as *mut _),
-        pty_writer,
+        pty_input_tx: input_tx,
     };
     let data_ptr = Box::into_raw(Box::new(data)) as isize;
     let hinstance = GetModuleHandleW(None)?;
@@ -271,7 +290,7 @@ unsafe extern "system" fn terminal_wnd_proc(
 
             // ── Special keys → VT escape sequences ──────────────────────
             let seq: Option<&[u8]> = match vk {
-                VK_RETURN    => Some(b"\r"),
+                // VK_RETURN is handled in WM_CHAR (ch==13) to avoid double-send
                 VK_BACK      => Some(b"\x7f"),
                 VK_ESCAPE    => Some(b"\x1b"),
                 VK_TAB       => if shift { Some(b"\x1b[Z") } else { Some(b"\t") },
@@ -310,7 +329,13 @@ unsafe extern "system" fn terminal_wnd_proc(
 
         WM_CHAR => {
             let ch = wparam.0 as u32;
-            // Skip control characters already handled in WM_KEYDOWN
+            // Enter (CR) — handle here as safety net even though WM_KEYDOWN also sends it.
+            // TranslateMessage always generates WM_CHAR for Enter, so this ensures it's never lost.
+            if ch == 13 {
+                write_pty(hwnd, b"\r");
+                return LRESULT(0);
+            }
+            // Skip other control characters already handled in WM_KEYDOWN
             if ch < 32 { return LRESULT(0); }
             // Encode Unicode character as UTF-8 and write to PTY
             if let Some(c) = char::from_u32(ch) {
@@ -322,11 +347,32 @@ unsafe extern "system" fn terminal_wnd_proc(
         }
 
         // ── Mouse ────────────────────────────────────────────────────────
-        WM_LBUTTONDOWN => {
-            // Take keyboard focus on click
+        // Ensure this HWND activates and takes focus whenever clicked
+        WM_MOUSEACTIVATE => {
             let _ = SetFocus(Some(hwnd));
+            // Cancel any pending prefix mode on click — prevents stuck prefix
+            if PREFIX_ACTIVE.swap(false, Ordering::Relaxed) {
+                send_msg(hwnd, WindowMessage::PrefixDeactivated);
+            }
+            LRESULT(2) // MA_ACTIVATE — activate and process the click
+        }
+
+        WM_LBUTTONDOWN => {
+            let _ = SetFocus(Some(hwnd));
+            // Cancel any pending prefix mode on click
+            if PREFIX_ACTIVE.swap(false, Ordering::Relaxed) {
+                send_msg(hwnd, WindowMessage::PrefixDeactivated);
+            }
             send_msg(hwnd, WindowMessage::Clicked);
             LRESULT(0)
+        }
+
+        // Cancel prefix mode when this HWND loses focus
+        WM_KILLFOCUS => {
+            if PREFIX_ACTIVE.swap(false, Ordering::Relaxed) {
+                send_msg(hwnd, WindowMessage::PrefixDeactivated);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
 
         WM_MOUSEWHEEL => {
@@ -364,20 +410,32 @@ unsafe fn send_msg(hwnd: HWND, msg: WindowMessage) {
 unsafe fn write_pty(hwnd: HWND, data: &[u8]) {
     let ptr = get_data(hwnd);
     if !ptr.is_null() {
-        // Use try_lock to avoid blocking the main thread's message pump.
-        // If the lock is held (e.g. by EventProxy writing a PtyWrite response),
-        // we skip this keystroke rather than freeze the UI.
-        if let Ok(mut w) = (*ptr).pty_writer.try_lock() {
-            let _ = w.write_all(data);
-        }
+        // Queue input via channel — never blocks WndProc, never drops keys.
+        // A dedicated writer thread drains the channel and writes to the PTY.
+        let _ = (*ptr).pty_input_tx.send(data.to_vec());
     }
 }
 
 /// Map a virtual key code to a command character for the prefix system.
+/// Shift state is checked for keys that produce different chars when shifted.
 fn vk_to_command_char(vk: VIRTUAL_KEY) -> Option<char> {
+    let shift = unsafe {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
+        GetKeyState(0x10) < 0 // VK_SHIFT
+    };
     match vk.0 {
         0x41..=0x5A => Some((vk.0 as u8 + 32) as char), // A-Z → a-z
         0x30..=0x39 => Some((vk.0 as u8) as char),       // 0-9
+        0xBF => Some(if shift { '?' } else { '/' }),      // OEM_2: / and ?
+        0xBD => Some(if shift { '_' } else { '-' }),      // OEM_MINUS
+        0xBB => Some(if shift { '+' } else { '=' }),      // OEM_PLUS
+        0xDB => Some(if shift { '{' } else { '[' }),      // OEM_4
+        0xDD => Some(if shift { '}' } else { ']' }),      // OEM_6
+        0xDC => Some(if shift { '|' } else { '\\' }),     // OEM_5
+        0xBA => Some(if shift { ':' } else { ';' }),      // OEM_1
+        0xDE => Some(if shift { '"' } else { '\'' }),     // OEM_7
+        0xBC => Some(if shift { '<' } else { ',' }),      // OEM_COMMA
+        0xBE => Some(if shift { '>' } else { '.' }),      // OEM_PERIOD
         _ => None,
     }
 }

@@ -16,6 +16,8 @@ export function Sidebar({ onShowHelp }: SidebarProps) {
     createTerminalInTab, createAgentTerminalInTab,
     shells, defaultShellId, setDefaultShell,
     showFileTree, toggleFileTree,
+    showBrowser, toggleBrowser,
+    showGitDiff, toggleGitDiff,
   } = useStore();
 
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
@@ -113,6 +115,22 @@ export function Sidebar({ onShowHelp }: SidebarProps) {
             Files
           </button>
           <ContextShortcut />
+        </div>
+        <div className="sidebar-footer-row">
+          <button
+            className={`sidebar-footer-btn ${showBrowser ? 'active' : ''}`}
+            onClick={toggleBrowser}
+            title="Browser pane (Ctrl-A b)"
+          >
+            Browser
+          </button>
+          <button
+            className={`sidebar-footer-btn ${showGitDiff ? 'active' : ''}`}
+            onClick={toggleGitDiff}
+            title="Git diff (Ctrl-A g)"
+          >
+            Git
+          </button>
         </div>
         <button
           className="sidebar-footer-btn sidebar-help-btn"

@@ -66,7 +66,10 @@ pub fn run() {
             commands::remove_pane,
             commands::rename_workspace,
             commands::delete_workspace,
+            commands::reorder_panes,
+            commands::set_tab_direction,
             commands::get_git_metadata,
+            commands::git_changed_files,
             commands::list_context,
             commands::create_context,
             commands::update_context,
@@ -84,6 +87,10 @@ pub fn run() {
             commands::show_browser,
             commands::hide_browser,
             commands::close_browser,
+            commands::close_browser_tab,
+            commands::switch_browser_tab,
+            commands::list_browser_tabs,
+            commands::browser_open_devtools,
             commands::list_directory,
         ])
         .run(tauri::generate_context!())

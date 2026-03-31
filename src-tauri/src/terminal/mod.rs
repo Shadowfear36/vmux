@@ -6,6 +6,7 @@ pub mod window;
 pub mod input;
 pub mod shell;
 pub mod agents;
+pub mod cwd;
 
 use std::collections::HashMap;
 use anyhow::Result;
@@ -215,11 +216,15 @@ impl TerminalPane {
             while let Some(bytes) = rx.recv().await {
                 let text = String::from_utf8_lossy(&bytes);
 
-                // Parse all OSC actions (notifications + browser commands)
+                // Parse all OSC actions (notifications + browser + cwd)
                 for action in osc.parse_actions(&text) {
                     match action {
                         OscAction::Notification(msg) => {
                             let _ = notif_tx.send((id.clone(), msg));
+                        }
+                        OscAction::CwdChanged(path) => {
+                            let _ = app_osc.emit("terminal:cwd",
+                                serde_json::json!({ "terminalId": id, "cwd": path }));
                         }
                         OscAction::BrowserOpen(url) => {
                             let _ = app_osc.emit("agent:browser-open",
@@ -284,6 +289,28 @@ impl TerminalPane {
                 }
             }
         });
+
+        // ── Task: CWD polling (fallback for shells that don't emit OSC 7) ────
+        if let Some(pid) = self.info.pid {
+            let id_cwd  = self.info.id.clone();
+            let app_cwd = app.clone();
+            tokio::spawn(async move {
+                let mut last_cwd = String::new();
+                let mut interval = tokio::time::interval(
+                    std::time::Duration::from_secs(2)
+                );
+                loop {
+                    interval.tick().await;
+                    if let Some(cwd) = cwd::get_process_cwd(pid) {
+                        if cwd != last_cwd {
+                            last_cwd = cwd.clone();
+                            let _ = app_cwd.emit("terminal:cwd",
+                                serde_json::json!({ "terminalId": id_cwd, "cwd": cwd }));
+                        }
+                    }
+                }
+            });
+        }
 
         // ── Task: Win32 mouse events → scroll / click notification ───────────
         let grid_inp   = self.grid.clone();

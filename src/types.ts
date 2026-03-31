@@ -50,6 +50,7 @@ export interface Tab {
   name: string;
   panes: Pane[];
   layout: string | null;
+  direction: 'horizontal' | 'vertical';
 }
 
 export interface Workspace {
@@ -68,6 +69,11 @@ export interface ContextEntry {
   tags: string[];
   created_at: number;
   updated_at: number;
+}
+
+export interface BrowserTabInfo {
+  id: string;
+  url: string;
 }
 
 export interface GitMeta {

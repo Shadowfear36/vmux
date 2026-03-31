@@ -33,6 +33,13 @@ pub struct Tab {
     pub panes: Vec<Pane>,
     /// Serialized allotment split sizes (JSON array of percentages)
     pub layout: Option<String>,
+    /// Split direction: "horizontal" (side-by-side) or "vertical" (top/bottom)
+    #[serde(default = "default_direction")]
+    pub direction: String,
+}
+
+fn default_direction() -> String {
+    "horizontal".to_string()
 }
 
 /// A workspace groups tabs together (e.g. one per project).
@@ -59,6 +66,10 @@ impl WorkspaceManager {
                 name TEXT NOT NULL,
                 data TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS vmux_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         ")?;
 
         let mut mgr = WorkspaceManager {
@@ -72,6 +83,13 @@ impl WorkspaceManager {
         // Create default workspace if none exist
         if mgr.workspaces.is_empty() {
             mgr.create_workspace("Default")?;
+        }
+
+        // Restore persisted active workspace
+        if let Ok(saved_id) = mgr.load_meta("active_workspace_id") {
+            if mgr.workspaces.contains_key(&saved_id) {
+                mgr.active_workspace_id = Some(saved_id);
+            }
         }
 
         Ok(mgr)
@@ -128,6 +146,7 @@ impl WorkspaceManager {
             name: name.to_string(),
             panes: vec![],
             layout: None,
+            direction: "horizontal".to_string(),
         };
         if let Some(ws) = self.workspaces.get_mut(workspace_id) {
             ws.tabs.push(tab.clone());
@@ -177,7 +196,53 @@ impl WorkspaceManager {
     pub fn set_active(&mut self, workspace_id: &str) {
         if self.workspaces.contains_key(workspace_id) {
             self.active_workspace_id = Some(workspace_id.to_string());
+            let _ = self.save_meta("active_workspace_id", workspace_id);
         }
+    }
+
+    fn save_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.db.execute(
+            "INSERT OR REPLACE INTO vmux_meta (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    fn load_meta(&self, key: &str) -> Result<String> {
+        let value: String = self.db.query_row(
+            "SELECT value FROM vmux_meta WHERE key=?1",
+            params![key],
+            |row| row.get(0),
+        )?;
+        Ok(value)
+    }
+
+    pub fn reorder_panes(&mut self, workspace_id: &str, tab_id: &str, pane_ids: &[String]) -> Result<()> {
+        if let Some(ws) = self.workspaces.get_mut(workspace_id) {
+            if let Some(tab) = ws.tabs.iter_mut().find(|t| t.id == tab_id) {
+                let mut reordered = Vec::new();
+                for id in pane_ids {
+                    if let Some(pane) = tab.panes.iter().find(|p| p.id == *id) {
+                        reordered.push(pane.clone());
+                    }
+                }
+                tab.panes = reordered;
+            }
+            let ws_clone = ws.clone();
+            self.save_workspace(&ws_clone)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_tab_direction(&mut self, workspace_id: &str, tab_id: &str, direction: &str) -> Result<()> {
+        if let Some(ws) = self.workspaces.get_mut(workspace_id) {
+            if let Some(tab) = ws.tabs.iter_mut().find(|t| t.id == tab_id) {
+                tab.direction = direction.to_string();
+            }
+            let ws_clone = ws.clone();
+            self.save_workspace(&ws_clone)?;
+        }
+        Ok(())
     }
 
     pub fn remove_pane(&mut self, workspace_id: &str, tab_id: &str, pane_id: &str) -> Result<()> {

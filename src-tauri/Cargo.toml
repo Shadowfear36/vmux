@@ -48,6 +48,7 @@ windows = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_System_DataExchange",
     "Win32_System_Registry",
+    "Win32_System_Diagnostics_Debug",
 ] }
 
 # raw-window-handle for wgpu surface + Tauri HWND access

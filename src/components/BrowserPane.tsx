@@ -9,21 +9,19 @@ interface Props {
   initialUrl?: string;
 }
 
-/**
- * BrowserPane renders a transparent placeholder div and tells the Rust backend
- * where to position the WebView2 child pane. Mirrors the TerminalPane pattern.
- *
- * IMPORTANT: cleanup must NOT call closeBrowser() (which sets showBrowser=false)
- * because React StrictMode runs cleanup between mount cycles, which would
- * toggle the browser off immediately after toggling it on.
- */
 export function BrowserPane({ initialUrl }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [urlInput, setUrlInput] = useState(initialUrl ?? 'https://example.com');
   const [isEditing, setIsEditing] = useState(false);
   const [browserReady, setBrowserReady] = useState(false);
+  const [browserError, setBrowserError] = useState<string | null>(null);
 
-  const { openBrowser, setBrowserBounds, browserNavigate, browserBack, browserForward, browserReload, setBrowserUrl } = useStore();
+  const {
+    openBrowser, openBrowserTab, closeBrowserTab, switchBrowserTab,
+    setBrowserBounds, browserNavigate, browserBack, browserForward,
+    browserReload, browserOpenDevtools, setBrowserUrl,
+    browserTabs, activeBrowserTabId,
+  } = useStore();
 
   // ── Bounds reporting ────────────────────────────────────────────────────────
 
@@ -42,12 +40,9 @@ export function BrowserPane({ initialUrl }: Props) {
 
   // ── Lifecycle ───────────────────────────────────────────────────────────────
 
-  const [browserError, setBrowserError] = useState<string | null>(null);
-
   useEffect(() => {
     let cancelled = false;
 
-    // Delay to let layout settle
     const timer = setTimeout(async () => {
       if (cancelled) return;
       const el = containerRef.current;
@@ -73,14 +68,14 @@ export function BrowserPane({ initialUrl }: Props) {
     return () => {
       cancelled = true;
       clearTimeout(timer);
-      // Only close the backend webview — do NOT set showBrowser=false
-      // (that's the caller's job via toggleBrowser/closeBrowser)
       invoke('close_browser').catch(() => {});
     };
   }, []);
 
   useEffect(() => {
     if (!browserReady) return;
+    // Report bounds immediately and on any resize
+    reportBounds();
     const observer = new ResizeObserver(reportBounds);
     if (containerRef.current) observer.observe(containerRef.current);
     return () => observer.disconnect();
@@ -99,9 +94,20 @@ export function BrowserPane({ initialUrl }: Props) {
   // ── URL bar sync ───────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const unsub = listen<string>('browser:url-changed', ({ payload }) => {
-      setUrlInput(payload);
-      setBrowserUrl(payload);
+    const unsub = listen<{ tabId: string; url: string } | string>('browser:url-changed', ({ payload }) => {
+      // Handle both new format {tabId, url} and legacy string format
+      const url = typeof payload === 'string' ? payload : payload.url;
+      const tabId = typeof payload === 'string' ? null : payload.tabId;
+      setUrlInput(url);
+      setBrowserUrl(url);
+      // Update tab URL in store
+      if (tabId) {
+        useStore.setState(s => ({
+          browserTabs: s.browserTabs.map(t =>
+            t.id === tabId ? { ...t, url } : t
+          ),
+        }));
+      }
     });
     return () => { unsub.then(f => f()); };
   }, [setBrowserUrl]);
@@ -128,6 +134,20 @@ export function BrowserPane({ initialUrl }: Props) {
     }
   }, [handleNavigate]);
 
+  const handleNewTab = useCallback(async () => {
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const bounds = {
+      x: Math.round(rect.left * dpr),
+      y: Math.round(rect.top * dpr),
+      width: Math.round(rect.width * dpr),
+      height: Math.round(rect.height * dpr),
+    };
+    await openBrowserTab(bounds, 'https://example.com');
+  }, [openBrowserTab]);
+
   if (browserError) {
     return (
       <div className="browser-pane-wrapper">
@@ -145,11 +165,39 @@ export function BrowserPane({ initialUrl }: Props) {
 
   return (
     <div className="browser-pane-wrapper">
+      {/* Browser tab bar */}
+      {browserTabs.length > 0 && (
+        <div className="browser-tabbar">
+          {browserTabs.map(tab => (
+            <div
+              key={tab.id}
+              className={`browser-tab ${tab.id === activeBrowserTabId ? 'browser-tab-active' : ''}`}
+              onClick={() => {
+                switchBrowserTab(tab.id);
+                setUrlInput(tab.url);
+              }}
+            >
+              <span className="browser-tab-url">
+                {(() => {
+                  try { return new URL(tab.url).hostname || tab.url; }
+                  catch { return tab.url; }
+                })()}
+              </span>
+              <button
+                className="browser-tab-close"
+                onClick={e => { e.stopPropagation(); closeBrowserTab(tab.id); }}
+              >x</button>
+            </div>
+          ))}
+          <button className="browser-tab-new" onClick={handleNewTab} title="New tab">+</button>
+        </div>
+      )}
+
       {/* URL toolbar */}
       <div className="browser-toolbar">
-        <button className="browser-nav-btn" onClick={browserBack} title="Back">←</button>
-        <button className="browser-nav-btn" onClick={browserForward} title="Forward">→</button>
-        <button className="browser-nav-btn" onClick={browserReload} title="Reload">↺</button>
+        <button className="browser-nav-btn" onClick={browserBack} title="Back">&#x2190;</button>
+        <button className="browser-nav-btn" onClick={browserForward} title="Forward">&#x2192;</button>
+        <button className="browser-nav-btn" onClick={browserReload} title="Reload">&#x21BA;</button>
         <input
           className="browser-url-input"
           type="text"
@@ -161,10 +209,12 @@ export function BrowserPane({ initialUrl }: Props) {
           spellCheck={false}
         />
         <button className="browser-go-btn" onClick={handleNavigate}>Go</button>
-        <span className="browser-cdp-hint" title="Playwright can connect to localhost:9222">CDP:9222</span>
+        <button className="browser-nav-btn browser-devtools-btn" onClick={browserOpenDevtools} title="DevTools (F12)">
+          DevTools
+        </button>
       </div>
 
-      {/* Transparent surface — WebView2 renders behind/over this */}
+      {/* Transparent surface -- WebView2 renders behind/over this */}
       <div ref={containerRef} className="browser-pane-surface" />
     </div>
   );

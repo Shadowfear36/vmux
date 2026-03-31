@@ -1,5 +1,8 @@
 import React, { useEffect, useCallback, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { listen } from '@tauri-apps/api/event';
+import { Allotment } from 'allotment';
+import 'allotment/dist/style.css';
 import { useStore } from './store';
 import { Sidebar } from './components/Sidebar';
 import { TabView } from './components/TabView';
@@ -11,9 +14,9 @@ import './App.css';
 
 /**
  * vmux prefix key: Ctrl-A (like screen/tmux-style)
- * After pressing prefix, the next key triggers a command:
  *
- *   Ctrl-A c     → split new pane
+ *   Ctrl-A c     → split side-by-side (horizontal)
+ *   Ctrl-A -     → split stacked (vertical)
  *   Ctrl-A t     → new tab
  *   Ctrl-A n     → next tab
  *   Ctrl-A p     → previous tab
@@ -21,25 +24,45 @@ import './App.css';
  *   Ctrl-A x     → toggle context panel
  *   Ctrl-A b     → toggle browser pane
  *   Ctrl-A f     → toggle file tree
+ *   Ctrl-A g     → toggle git diff panel
  *   Ctrl-A w     → new workspace
  *   Ctrl-A ?     → toggle keyboard help
  */
-const PREFIX_KEY = 'a'; // i.e. Ctrl-A
+const PREFIX_KEY = 'a';
 
 function handlePrefixCommand(key: string) {
   const store = useStore.getState();
   const ws = store.workspaces.find(w => w.id === store.activeWorkspaceId);
 
   switch (key) {
-    case 'c': {
+    case 'c':   // Split side-by-side (horizontal)
+    case '|':
+    case '%': {
       if (!ws) break;
       if (ws.tabs.length === 0) {
         store.addTab(ws.id, 'Terminal');
       } else {
         const tab = ws.tabs.find(t => t.id === store.activeTabId);
         if (tab && store.activeWorkspaceId) {
+          // Set direction to horizontal, then add pane
+          if (tab.direction !== 'horizontal') {
+            store.setTabDirection(store.activeWorkspaceId, tab.id, 'horizontal');
+          }
           setTimeout(() => store.createTerminalInTab(store.activeWorkspaceId!, tab.id), 0);
         }
+      }
+      break;
+    }
+    case '-':   // Split stacked (vertical)
+    case '"': {
+      if (!ws) break;
+      const tab = ws.tabs.find(t => t.id === store.activeTabId);
+      if (tab && store.activeWorkspaceId) {
+        // Set direction to vertical, then add pane
+        if (tab.direction !== 'vertical') {
+          store.setTabDirection(store.activeWorkspaceId, tab.id, 'vertical');
+        }
+        setTimeout(() => store.createTerminalInTab(store.activeWorkspaceId!, tab.id), 0);
       }
       break;
     }
@@ -52,6 +75,7 @@ function handlePrefixCommand(key: string) {
     case 'x': store.toggleContext(); break;
     case 'b': store.toggleBrowser(); break;
     case 'f': store.toggleFileTree(); break;
+    case 'g': store.toggleGitDiff(); break;
     case 'w': {
       const count = store.workspaces.length;
       store.createWorkspace(`Project ${count + 1}`);
@@ -63,7 +87,6 @@ function handlePrefixCommand(key: string) {
       }
       break;
     }
-    // '?' is handled in the component since it's local state
   }
 }
 
@@ -71,7 +94,7 @@ export default function App() {
   const {
     workspaces, activeWorkspaceId, activeTabId,
     loadWorkspaces, loadShells, addTab, setActiveTab,
-    toggleContext, toggleBrowser, showBrowser, showContext, showFileTree,
+    showBrowser, showContext, showFileTree, showGitDiff,
   } = useStore();
 
   const [prefixActive, setPrefixActive] = useState(false);
@@ -87,13 +110,11 @@ export default function App() {
       await loadShells();
       useStore.getState().loadAgents();
 
-      // Load context entries
       const store = useStore.getState();
       if (store.activeWorkspaceId) {
         store.loadContext(store.activeWorkspaceId);
       }
 
-      // Restore terminals for persisted panes
       if (store.activeWorkspaceId) {
         const ws = store.workspaces.find(w => w.id === store.activeWorkspaceId);
         if (ws && ws.tabs.some(t => t.panes.length > 0)) {
@@ -103,168 +124,146 @@ export default function App() {
     })();
   }, []);
 
-  // ── Agent notification listener ───────────────────────────────────────────
+  // ── Event listeners ──────────────────────────────────────────────────────
   useEffect(() => {
     const unsub = listen<{ terminalId: string; message: string }>(
       'terminal:notification',
-      ({ payload }) => {
-        useStore.getState().setNotification(payload.terminalId, payload.message);
-      }
+      ({ payload }) => { useStore.getState().setNotification(payload.terminalId, payload.message); }
     );
     return () => { unsub.then(f => f()); };
   }, []);
 
-  // ── Terminal title updates (OSC 0/2) ──────────────────────────────────────
+  useEffect(() => {
+    const unsub = listen<{ terminalId: string; cwd: string }>(
+      'terminal:cwd',
+      ({ payload }) => { useStore.getState().setTerminalCwd(payload.terminalId, payload.cwd); }
+    );
+    return () => { unsub.then(f => f()); };
+  }, []);
+
   useEffect(() => {
     const unsub = listen<{ terminalId: string; title: string }>(
       'terminal:title',
-      ({ payload }) => {
-        useStore.getState().setTerminalTitle(payload.terminalId, payload.title);
-      }
+      ({ payload }) => { useStore.getState().setTerminalTitle(payload.terminalId, payload.title); }
     );
     return () => { unsub.then(f => f()); };
   }, []);
 
-  // ── Agent browser control (OSC vmux;browser-*) ───────────────────────────
   useEffect(() => {
     const unsubs: Promise<() => void>[] = [];
-
     unsubs.push(listen<{ terminalId: string; url: string }>('agent:browser-open', ({ payload }) => {
       const store = useStore.getState();
-      if (!store.showBrowser) {
-        store.toggleBrowser();
-      }
-      // Small delay to let the browser pane mount
+      if (!store.showBrowser) store.toggleBrowser();
       setTimeout(() => store.browserNavigate(payload.url), 300);
     }));
-
     unsubs.push(listen<{ terminalId: string; url: string }>('agent:browser-navigate', ({ payload }) => {
       useStore.getState().browserNavigate(payload.url);
     }));
-
     unsubs.push(listen<{ terminalId: string }>('agent:browser-close', () => {
       const store = useStore.getState();
       if (store.showBrowser) store.toggleBrowser();
     }));
-
     unsubs.push(listen<{ terminalId: string; js: string }>('agent:browser-eval', ({ payload }) => {
       useStore.getState().browserEvaluate(payload.js);
     }));
-
     return () => { unsubs.forEach(u => u.then(f => f())); };
   }, []);
 
-  // ── JS keyboard prefix fallback ──────────────────────────────────────────
+  // ── Keyboard prefix ──────────────────────────────────────────────────────
   useEffect(() => {
     let jsPrefixPending = false;
-
     const handleKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-
       if (!jsPrefixPending && e.ctrlKey && e.key === 'a') {
-        e.preventDefault();
-        jsPrefixPending = true;
-        setPrefixActive(true);
-        return;
+        e.preventDefault(); jsPrefixPending = true; setPrefixActive(true); return;
       }
-
       if (jsPrefixPending) {
-        e.preventDefault();
-        jsPrefixPending = false;
-        setPrefixActive(false);
-
-        if (e.key === '?') {
-          setShowHelp(h => !h);
-        } else {
-          handlePrefixCommand(e.key);
-        }
+        e.preventDefault(); jsPrefixPending = false; setPrefixActive(false);
+        if (e.key === '?') setShowHelp(h => !h);
+        else handlePrefixCommand(e.key);
       }
     };
-
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // ── Prefix system (driven by native HWND via Tauri events) ───────────────
   useEffect(() => {
-    const unsub1 = listen<{ terminalId: string }>('prefix:activated', () => {
-      setPrefixActive(true);
-    });
-    const unsub2 = listen<{}>('prefix:deactivated', () => {
-      setPrefixActive(false);
-    });
+    const unsub1 = listen<{ terminalId: string }>('prefix:activated', () => setPrefixActive(true));
+    const unsub2 = listen<{}>('prefix:deactivated', () => setPrefixActive(false));
     const unsub3 = listen<{ key: string }>('prefix:command', ({ payload }) => {
       setPrefixActive(false);
-      if (payload.key === '?') {
-        setShowHelp(h => !h);
-      } else {
-        handlePrefixCommand(payload.key);
-      }
+      if (payload.key === '?') setShowHelp(h => !h);
+      else handlePrefixCommand(payload.key);
     });
-    return () => {
-      unsub1.then(f => f());
-      unsub2.then(f => f());
-      unsub3.then(f => f());
-    };
+    return () => { unsub1.then(f => f()); unsub2.then(f => f()); unsub3.then(f => f()); };
   }, []);
 
-  // ── Tab bar for multi-tab workspaces ─────────────────────────────────────
   const tabs = activeWorkspace?.tabs ?? [];
 
   return (
     <div className="app">
-      {prefixActive && <div className="prefix-indicator">PREFIX</div>}
-      {showHelp && <KeyboardHelp onClose={() => setShowHelp(false)} />}
+      <Allotment proportionalLayout={false}>
+        {/* Sidebar — resizable */}
+        <Allotment.Pane minSize={140} preferredSize={220} maxSize={400}>
+          <Sidebar onShowHelp={() => setShowHelp(h => !h)} />
+        </Allotment.Pane>
 
-      <div className="app-sidebar">
-        <Sidebar onShowHelp={() => setShowHelp(h => !h)} />
-      </div>
-
-      {showFileTree && (
-        <div className="app-file-tree">
+        {/* File tree — resizable, toggleable */}
+        <Allotment.Pane minSize={120} preferredSize={200} maxSize={400} visible={showFileTree}>
           <FileTree />
-        </div>
-      )}
+        </Allotment.Pane>
 
-      <div className="app-main">
-        {/* Tab bar */}
-        {tabs.length > 1 && (
-          <div className="tabbar">
-            {tabs.map((tab, i) => (
-              <div
-                key={tab.id}
-                className={`tabbar-item ${tab.id === activeTabId ? 'tabbar-item-active' : ''}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <span className="tabbar-index">{i + 1}</span>
-                {tab.name}
+        {/* Main content area */}
+        <Allotment.Pane minSize={200}>
+          <div className="app-main">
+            {tabs.length > 1 && (
+              <div className="tabbar">
+                {tabs.map((tab, i) => (
+                  <div
+                    key={tab.id}
+                    className={`tabbar-item ${tab.id === activeTabId ? 'tabbar-item-active' : ''}`}
+                    onClick={() => setActiveTab(tab.id)}
+                  >
+                    <span className="tabbar-index">{i + 1}</span>
+                    {tab.name}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        )}
-
-        <div className="app-content">
-          <div className={`app-terminal-area ${showBrowser ? 'app-terminal-area-split' : ''}`}>
-            {activeTab ? (
-              <TabView tab={activeTab} />
-            ) : (
-              <WelcomeScreen onStart={() => activeWorkspaceId && addTab(activeWorkspaceId, 'Workspace')} />
             )}
-          </div>
-          {showBrowser && (
-            <div className="app-browser-area">
-              <BrowserPane />
-            </div>
-          )}
-        </div>
-      </div>
 
-      {showContext && (
-        <div className="app-context-panel">
+            <div className="app-content">
+              {/* Terminal + Browser — resizable split */}
+              <Allotment>
+                <Allotment.Pane minSize={200}>
+                  {activeTab ? (
+                    <TabView tab={activeTab} />
+                  ) : (
+                    <WelcomeScreen onStart={() => activeWorkspaceId && addTab(activeWorkspaceId, 'Workspace')} />
+                  )}
+                </Allotment.Pane>
+                <Allotment.Pane minSize={200} preferredSize={500} visible={showBrowser}>
+                  <BrowserPane />
+                </Allotment.Pane>
+              </Allotment>
+            </div>
+          </div>
+        </Allotment.Pane>
+
+        {/* Git diff panel — toggleable */}
+        <Allotment.Pane minSize={200} preferredSize={320} maxSize={600} visible={showGitDiff}>
+          <GitDiffPanel />
+        </Allotment.Pane>
+
+        {/* Context panel — resizable, toggleable */}
+        <Allotment.Pane minSize={200} preferredSize={320} maxSize={500} visible={showContext}>
           <ContextPanel />
-        </div>
-      )}
+        </Allotment.Pane>
+      </Allotment>
+
+      {/* Portals — render overlays into document.body to escape Allotment stacking context */}
+      {prefixActive && createPortal(<div className="prefix-indicator">PREFIX</div>, document.body)}
+      {showHelp && createPortal(<KeyboardHelp onClose={() => setShowHelp(false)} />, document.body)}
     </div>
   );
 }
@@ -277,16 +276,92 @@ function WelcomeScreen({ onStart }: { onStart: () => void }) {
         <div className="welcome-subtitle">Windows terminal multiplexer for AI agents</div>
         <button className="welcome-btn" onClick={onStart}>New Terminal</button>
         <div className="welcome-keys">
-          <div className="key-row"><kbd>Ctrl-A c</kbd> Split new pane</div>
+          <div className="key-row"><kbd>Ctrl-A c</kbd> Split side-by-side</div>
+          <div className="key-row"><kbd>Ctrl-A -</kbd> Split stacked</div>
           <div className="key-row"><kbd>Ctrl-A t</kbd> New tab</div>
           <div className="key-row"><kbd>Ctrl-A n/p</kbd> Next/prev tab</div>
           <div className="key-row"><kbd>Ctrl-A d</kbd> Close pane</div>
           <div className="key-row"><kbd>Ctrl-A x</kbd> Context panel</div>
           <div className="key-row"><kbd>Ctrl-A b</kbd> Browser pane</div>
           <div className="key-row"><kbd>Ctrl-A f</kbd> File tree</div>
+          <div className="key-row"><kbd>Ctrl-A g</kbd> Git diff</div>
           <div className="key-row"><kbd>Ctrl-A ?</kbd> Keyboard help</div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Git Diff Panel ─────────────────────────────────────────────────────────
+
+import { invoke } from '@tauri-apps/api/core';
+
+interface GitChangedFile {
+  path: string;
+  status: string;
+  diff: string;
+}
+
+function GitDiffPanel() {
+  const { toggleGitDiff, focusedTerminalId, terminals } = useStore();
+  const [files, setFiles] = useState<GitChangedFile[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const cwd = focusedTerminalId ? terminals[focusedTerminalId]?.working_dir : null;
+
+  useEffect(() => {
+    if (!cwd) { setFiles([]); return; }
+    setLoading(true);
+    invoke<GitChangedFile[]>('git_changed_files', { dir: cwd })
+      .then(setFiles)
+      .catch(() => setFiles([]))
+      .finally(() => setLoading(false));
+  }, [cwd]);
+
+  const refresh = () => {
+    if (!cwd) return;
+    setLoading(true);
+    invoke<GitChangedFile[]>('git_changed_files', { dir: cwd })
+      .then(setFiles)
+      .catch(() => setFiles([]))
+      .finally(() => setLoading(false));
+  };
+
+  const selectedFile = files.find(f => f.path === selected);
+
+  return (
+    <div className="git-diff-panel">
+      <div className="git-diff-header">
+        <span>Git Changes</span>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button className="git-diff-btn" onClick={refresh} title="Refresh">R</button>
+          <button className="git-diff-btn" onClick={toggleGitDiff} title="Close">x</button>
+        </div>
+      </div>
+      {loading && <div className="git-diff-loading">Loading...</div>}
+      {!loading && files.length === 0 && (
+        <div className="git-diff-empty">{cwd ? 'No changes' : 'Focus a terminal'}</div>
+      )}
+      <div className="git-diff-files">
+        {files.map(f => (
+          <div
+            key={f.path}
+            className={`git-diff-file ${f.path === selected ? 'git-diff-file-active' : ''}`}
+            onClick={() => setSelected(f.path === selected ? null : f.path)}
+          >
+            <span className={`git-diff-status git-diff-status-${f.status.toLowerCase()}`}>
+              {f.status.charAt(0)}
+            </span>
+            <span className="git-diff-path">{f.path}</span>
+          </div>
+        ))}
+      </div>
+      {selectedFile && (
+        <div className="git-diff-content">
+          <pre className="git-diff-pre">{selectedFile.diff || '(no diff)'}</pre>
+        </div>
+      )}
     </div>
   );
 }

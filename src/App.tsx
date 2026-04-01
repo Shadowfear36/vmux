@@ -87,6 +87,17 @@ function handlePrefixCommand(key: string) {
       }
       break;
     }
+    case 'a': {
+      // Launch first available agent (Claude) in the focused terminal's CWD
+      if (!ws || !store.activeTabId) break;
+      const agent = store.agents[0]; // Claude is typically first
+      if (!agent) break;
+      const focusedDir = store.focusedTerminalId
+        ? store.terminals[store.focusedTerminalId]?.working_dir ?? undefined
+        : undefined;
+      store.createAgentTerminalInTab(ws.id, store.activeTabId, agent.id, focusedDir);
+      break;
+    }
   }
 }
 

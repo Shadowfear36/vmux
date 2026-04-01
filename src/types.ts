@@ -59,6 +59,7 @@ export interface Workspace {
   name: string;
   tabs: Tab[];
   active_tab_id: string | null;
+  directory: string | null;
 }
 
 export interface ContextEntry {
@@ -75,6 +76,14 @@ export interface ContextEntry {
 export interface BrowserTabInfo {
   id: string;
   url: string;
+  title: string;
+}
+
+export interface BrowserHistoryEntry {
+  id: string;
+  url: string;
+  title: string | null;
+  visited_at: number;
 }
 
 // ─── Context Manager types ───────────────────────────────────────────────────

@@ -65,8 +65,9 @@ interface AppStore {
 
   openBrowser: (bounds: PaneBounds, url?: string) => Promise<void>;
   openBrowserTab: (bounds: PaneBounds, url?: string) => Promise<void>;
-  closeBrowserTab: (tabId: string) => Promise<void>;
-  switchBrowserTab: (tabId: string) => Promise<void>;
+  closeBrowserTab: (tabId: string, bounds: PaneBounds) => Promise<void>;
+  switchBrowserTab: (tabId: string, bounds: PaneBounds) => Promise<void>;
+  loadBrowserTabs: () => Promise<void>;
   setBrowserBounds: (bounds: PaneBounds) => Promise<void>;
   browserNavigate: (url: string) => void;
   browserBack: () => void;
@@ -83,6 +84,7 @@ interface AppStore {
 
   // Workspace management
   renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
+  setWorkspaceDirectory: (workspaceId: string, directory: string | null) => Promise<void>;
   deleteWorkspace: (workspaceId: string) => Promise<void>;
   cycleTab: (direction: 'next' | 'prev') => void;
 
@@ -131,16 +133,20 @@ export const useStore = create<AppStore>((set, get) => ({
     const tab = ws?.tabs.find(t => t.id === tabId);
     const sessionName = `${ws?.name ?? 'vmux'}-${tab?.name ?? 'tab'}`;
 
-    // Check for a previous Claude session in this directory for resume
-    const resumeSession = agentId === 'claude' && workingDir
-      ? state.claudeSessionsByDir[workingDir] ?? null
-      : null;
+    // Directory priority: explicit workingDir > workspace directory > focused terminal CWD
+    const effectiveDir = workingDir
+      ?? ws?.directory
+      ?? (state.focusedTerminalId ? state.terminals[state.focusedTerminalId]?.working_dir : null)
+      ?? null;
+
+    const continueSession = agentId === 'claude';
 
     const info: TerminalInfo = await invoke('create_agent_terminal', {
       agentId,
-      workingDir: workingDir ?? null,
+      workingDir: effectiveDir,
       sessionName: agentId === 'claude' ? sessionName : null,
-      resumeSession,
+      resumeSession: null,
+      continueSession,
     });
     set(s => ({ terminals: { ...s.terminals, [info.id]: info } }));
 
@@ -331,10 +337,13 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   createTerminalInTab: async (workspaceId, tabId, workingDir, shellId) => {
-    // Phase 1: spawn PTY
-    const effectiveShellId = shellId ?? get().defaultShellId ?? null;
+    const state = get();
+    const ws = state.workspaces.find(w => w.id === workspaceId);
+    // Directory priority: explicit > workspace directory > null (backend defaults to USERPROFILE)
+    const effectiveDir = workingDir ?? ws?.directory ?? null;
+    const effectiveShellId = shellId ?? state.defaultShellId ?? null;
     const info: TerminalInfo = await invoke('create_terminal', {
-      workingDir: workingDir ?? null,
+      workingDir: effectiveDir,
       shellId: effectiveShellId,
     });
     set(s => ({ terminals: { ...s.terminals, [info.id]: info } }));
@@ -484,23 +493,28 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   openBrowser: async (bounds, url) => {
-    await invoke('open_browser', { bounds, url: url ?? null });
-    const urlStr = url ?? 'about:blank';
-    set({ showBrowser: true, browserUrl: urlStr });
-  },
-
-  openBrowserTab: async (bounds, url) => {
     const tabId: string = await invoke('open_browser', { bounds, url: url ?? null });
     const urlStr = url ?? 'about:blank';
     set(s => ({
+      showBrowser: true,
       browserUrl: urlStr,
-      browserTabs: [...s.browserTabs, { id: tabId, url: urlStr }],
+      browserTabs: [...s.browserTabs, { id: tabId, url: urlStr, title: '' }],
       activeBrowserTabId: tabId,
     }));
   },
 
-  closeBrowserTab: async (tabId) => {
-    const tabs: BrowserTabInfo[] = await invoke('close_browser_tab', { tabId });
+  openBrowserTab: async (bounds, url) => {
+    const tabId: string = await invoke('open_browser_tab', { bounds, url: url ?? null });
+    const urlStr = url ?? 'about:blank';
+    set(s => ({
+      browserUrl: urlStr,
+      browserTabs: [...s.browserTabs, { id: tabId, url: urlStr, title: '' }],
+      activeBrowserTabId: tabId,
+    }));
+  },
+
+  closeBrowserTab: async (tabId, bounds) => {
+    const tabs: BrowserTabInfo[] = await invoke('close_browser_tab', { tabId, bounds });
     set(s => {
       const showBrowser = tabs.length > 0 ? s.showBrowser : false;
       const activeTab = tabs.find(t => t.id === s.activeBrowserTabId) ?? tabs[tabs.length - 1];
@@ -513,8 +527,8 @@ export const useStore = create<AppStore>((set, get) => ({
     });
   },
 
-  switchBrowserTab: async (tabId) => {
-    await invoke('switch_browser_tab', { tabId });
+  switchBrowserTab: async (tabId, bounds) => {
+    await invoke('switch_browser_tab', { tabId, bounds });
     set(s => {
       const tab = s.browserTabs.find(t => t.id === tabId);
       return {
@@ -522,6 +536,11 @@ export const useStore = create<AppStore>((set, get) => ({
         browserUrl: tab?.url ?? s.browserUrl,
       };
     });
+  },
+
+  loadBrowserTabs: async () => {
+    const tabs: BrowserTabInfo[] = await invoke('list_browser_tabs');
+    set({ browserTabs: tabs });
   },
 
   setBrowserBounds: async (bounds) => {
@@ -577,7 +596,16 @@ export const useStore = create<AppStore>((set, get) => ({
     set({ showBrowser: false, browserTabs: [], activeBrowserTabId: null });
   },
 
-  toggleBrowser: () => set(s => ({ showBrowser: !s.showBrowser })),
+  toggleBrowser: () => {
+    const showing = !get().showBrowser;
+    set({ showBrowser: showing });
+    // Actually show/hide the WebView2 popup window
+    if (showing) {
+      invoke('show_browser').catch(() => {});
+    } else {
+      invoke('hide_browser').catch(() => {});
+    }
+  },
   setBrowserUrl: (url) => set({ browserUrl: url }),
 
   renameWorkspace: async (workspaceId, name) => {
@@ -585,6 +613,15 @@ export const useStore = create<AppStore>((set, get) => ({
     set(s => ({
       workspaces: s.workspaces.map(ws =>
         ws.id === workspaceId ? { ...ws, name } : ws
+      ),
+    }));
+  },
+
+  setWorkspaceDirectory: async (workspaceId, directory) => {
+    await invoke('set_workspace_directory', { workspaceId, directory });
+    set(s => ({
+      workspaces: s.workspaces.map(ws =>
+        ws.id === workspaceId ? { ...ws, directory } : ws
       ),
     }));
   },

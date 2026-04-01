@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useStore } from '../store';
 import type { GitMeta } from '../types';
 import './Sidebar.css';
@@ -224,7 +225,7 @@ function agentIcon(id: string): string {
 }
 
 function WorkspaceSelector() {
-  const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, renameWorkspace, deleteWorkspace } = useStore();
+  const { workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, renameWorkspace, setWorkspaceDirectory, deleteWorkspace } = useStore();
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState('');
@@ -302,6 +303,22 @@ function WorkspaceSelector() {
                 onClick={() => { setRenameValue(activeWs?.name ?? ''); setRenaming(true); }}
               >
                 Rename
+              </button>
+              <button
+                className="workspace-menu-item"
+                onClick={async () => {
+                  const selected = await openDialog({
+                    directory: true,
+                    title: 'Select workspace directory',
+                    defaultPath: activeWs?.directory ?? undefined,
+                  });
+                  if (selected && activeWorkspaceId) {
+                    setWorkspaceDirectory(activeWorkspaceId, selected as string);
+                  }
+                  setMenuOpen(false);
+                }}
+              >
+                Set Directory{activeWs?.directory ? ` (${activeWs.directory.split(/[\\/]/).pop()})` : ''}
               </button>
               {workspaces.length > 1 && (
                 <button

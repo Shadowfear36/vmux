@@ -26,6 +26,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()
                 .expect("failed to get app data dir");
@@ -69,6 +70,7 @@ pub fn run() {
             commands::update_layout,
             commands::remove_pane,
             commands::rename_workspace,
+            commands::set_workspace_directory,
             commands::delete_workspace,
             commands::reorder_panes,
             commands::set_tab_direction,
@@ -95,6 +97,9 @@ pub fn run() {
             commands::switch_browser_tab,
             commands::list_browser_tabs,
             commands::browser_open_devtools,
+            commands::open_browser_tab,
+            commands::browser_history,
+            commands::clear_browser_history,
             commands::list_directory,
             commands::install_claude_hooks,
             commands::list_projects,

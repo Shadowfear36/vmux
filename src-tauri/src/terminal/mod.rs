@@ -136,6 +136,7 @@ impl TerminalPane {
         agent: &AgentProfile,
         session_name: Option<String>,
         resume_session: Option<String>,
+        continue_session: bool,
     ) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
         let id = Uuid::new_v4().to_string();
         let effective_dir = working_dir.or_else(|| {
@@ -148,27 +149,26 @@ impl TerminalPane {
         let mut notify_file: Option<String> = None;
 
         if agent.id == "claude" {
-            // Set VMUX=1 so hooks/scripts know they're inside vmux
             env.push(("VMUX".into(), "1".into()));
 
-            // Create notify side-channel file for hook events
             let notify_dir = std::env::temp_dir().join("vmux");
             let _ = std::fs::create_dir_all(&notify_dir);
             let notify_path = notify_dir.join(format!("{}.notify", &id));
-            // Create empty file
             let _ = std::fs::File::create(&notify_path);
             let path_str = notify_path.to_string_lossy().to_string();
             env.push(("VMUX_NOTIFY_FILE".into(), path_str.clone()));
             notify_file = Some(path_str);
 
-            // Tag session with workspace/tab name
             if let Some(name) = &session_name {
                 args.push("--name".into());
                 args.push(name.clone());
             }
 
-            // Resume a previous session
-            if let Some(sid) = &resume_session {
+            // Session persistence: --continue resumes last session in CWD,
+            // --resume <id> resumes a specific session
+            if continue_session {
+                args.push("--continue".into());
+            } else if let Some(sid) = &resume_session {
                 args.push("--resume".into());
                 args.push(sid.clone());
             }
@@ -535,8 +535,9 @@ impl TerminalManager {
         agent: &AgentProfile,
         session_name: Option<String>,
         resume_session: Option<String>,
+        continue_session: bool,
     ) -> Result<TerminalInfo> {
-        let (pane, pty_rx) = TerminalPane::spawn_agent(working_dir, agent, session_name, resume_session)?;
+        let (pane, pty_rx) = TerminalPane::spawn_agent(working_dir, agent, session_name, resume_session, continue_session)?;
         let info = pane.info.clone();
         let id = info.id.clone();
         self.panes.insert(id.clone(), pane);

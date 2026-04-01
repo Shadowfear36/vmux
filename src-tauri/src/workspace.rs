@@ -49,6 +49,9 @@ pub struct Workspace {
     pub name: String,
     pub tabs: Vec<Tab>,
     pub active_tab_id: Option<String>,
+    /// Project directory for this workspace. Agents launch here by default.
+    #[serde(default)]
+    pub directory: Option<String>,
 }
 
 pub struct WorkspaceManager {
@@ -131,6 +134,7 @@ impl WorkspaceManager {
             name: name.to_string(),
             tabs: vec![],
             active_tab_id: None,
+            directory: None,
         };
         self.save_workspace(&ws)?;
         self.workspaces.insert(id.clone(), ws.clone());
@@ -262,6 +266,15 @@ impl WorkspaceManager {
             if ws.active_tab_id.as_deref() == Some(tab_id) {
                 ws.active_tab_id = ws.tabs.last().map(|t| t.id.clone());
             }
+            let ws_clone = ws.clone();
+            self.save_workspace(&ws_clone)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_workspace_directory(&mut self, workspace_id: &str, directory: Option<&str>) -> Result<()> {
+        if let Some(ws) = self.workspaces.get_mut(workspace_id) {
+            ws.directory = directory.map(|s| s.to_string());
             let ws_clone = ws.clone();
             self.save_workspace(&ws_clone)?;
         }

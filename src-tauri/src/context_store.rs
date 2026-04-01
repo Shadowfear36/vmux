@@ -149,6 +149,14 @@ impl ContextStore {
                 FOREIGN KEY (project_id) REFERENCES projects(id)
             );
             CREATE INDEX IF NOT EXISTS idx_agent_project ON agent_configs(project_id);
+
+            CREATE TABLE IF NOT EXISTS browser_history (
+                id TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                title TEXT,
+                visited_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_bh_visited ON browser_history(visited_at DESC);
         ")?;
         Ok(ContextStore { db })
     }
@@ -464,6 +472,43 @@ impl ContextStore {
         })?;
         Ok(rows.next().transpose()?)
     }
+
+    // ── Browser History ──────────────────────────────────────────────────────
+
+    pub fn add_history(&self, url: &str, title: Option<&str>) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        let now = chrono_now();
+        self.db.execute(
+            "INSERT INTO browser_history (id, url, title, visited_at) VALUES (?1, ?2, ?3, ?4)",
+            params![id, url, title, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_history(&self, limit: usize) -> Result<Vec<BrowserHistoryEntry>> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, url, title, visited_at FROM browser_history ORDER BY visited_at DESC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(BrowserHistoryEntry {
+                id: row.get(0)?, url: row.get(1)?, title: row.get(2)?, visited_at: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn clear_history(&self) -> Result<()> {
+        self.db.execute("DELETE FROM browser_history", [])?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserHistoryEntry {
+    pub id: String,
+    pub url: String,
+    pub title: Option<String>,
+    pub visited_at: i64,
 }
 
 // ─── Row Mappers ─────────────────────────────────────────────────────────────

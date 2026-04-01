@@ -14,92 +14,122 @@ import { FileTree } from './components/FileTree';
 import './App.css';
 
 /**
- * vmux prefix key: Ctrl-A (like screen/tmux-style)
+ * vmux prefix key system: Ctrl-A (like tmux)
  *
- *   Ctrl-A c     → split side-by-side (horizontal)
- *   Ctrl-A -     → split stacked (vertical)
- *   Ctrl-A t     → new tab
- *   Ctrl-A n     → next tab
- *   Ctrl-A p     → previous tab
- *   Ctrl-A d     → close focused pane
- *   Ctrl-A x     → toggle context panel
- *   Ctrl-A b     → toggle browser pane
- *   Ctrl-A f     → toggle file tree
- *   Ctrl-A g     → toggle git diff panel
- *   Ctrl-A w     → new workspace
- *   Ctrl-A ?     → toggle keyboard help
+ * Single keys:
+ *   c / | / %   → split horizontal (default shell)
+ *   - / "       → split vertical (default shell)
+ *   t           → new tab
+ *   n / p       → next / prev tab
+ *   d           → close focused pane
+ *   x / b / f / g → toggle panels
+ *   ?           → keyboard help
+ *
+ * Chords (two keys):
+ *   s → 1-9     → open shell #N (horizontal split)
+ *   s → - → 1-9 → open shell #N (vertical split)
+ *   a → 1-9     → open agent #N (horizontal split)
+ *   a → - → 1-9 → open agent #N (vertical split)
+ *   w → n       → new worktree (prompt for branch)
+ *   w → l       → list worktrees
+ *   w → +       → new workspace
  */
 const PREFIX_KEY = 'a';
 
-function handlePrefixCommand(key: string) {
+type ChordState = null | 'shell' | 'shell-vert' | 'agent' | 'agent-vert' | 'worktree';
+
+let chordState: ChordState = null;
+
+function handlePrefixCommand(key: string, setShowHelp: (fn: (h: boolean) => boolean) => void, setChordLabel: (l: string | null) => void): boolean {
   const store = useStore.getState();
   const ws = store.workspaces.find(w => w.id === store.activeWorkspaceId);
 
+  // ── Chord mode: waiting for second key ──────────────────────────────────
+  if (chordState) {
+    const state = chordState;
+    chordState = null;
+    setChordLabel(null);
+
+    // Sub-direction modifier: s/a → - means switch to vertical before picking
+    if ((state === 'shell' || state === 'agent') && (key === '-' || key === '"')) {
+      chordState = state === 'shell' ? 'shell-vert' : 'agent-vert';
+      setChordLabel(state === 'shell' ? 'SHELL ->' : 'AGENT ->');
+      return true; // stay in prefix mode
+    }
+
+    const direction: 'horizontal' | 'vertical' = (state === 'shell-vert' || state === 'agent-vert') ? 'vertical' : 'horizontal';
+    const num = parseInt(key);
+
+    if ((state === 'shell' || state === 'shell-vert') && num >= 1 && num <= 9) {
+      const shell = store.shells[num - 1];
+      if (shell && ws && store.activeTabId) {
+        store.splitFocusedPaneWith('shell', shell.id, direction);
+      }
+      return false;
+    }
+
+    if ((state === 'agent' || state === 'agent-vert') && num >= 1 && num <= 9) {
+      const agent = store.agents[num - 1];
+      if (agent && ws && store.activeTabId) {
+        store.splitFocusedPaneWith('agent', agent.id, direction);
+      }
+      return false;
+    }
+
+    if (state === 'worktree') {
+      if (key === 'n') {
+        // New worktree — prompt for branch name
+        const branch = prompt('Branch name for new worktree:');
+        if (branch && branch.trim()) {
+          store.createWorktreeTab(branch.trim());
+        }
+      } else if (key === '+') {
+        const count = store.workspaces.length;
+        store.createWorkspace(`Project ${count + 1}`);
+      }
+      return false;
+    }
+
+    return false;
+  }
+
+  // ── First key after Ctrl-A ──────────────────────────────────────────────
   switch (key) {
-    case 'c':   // Split side-by-side (horizontal)
-    case '|':
-    case '%': {
+    case 'c': case '|': case '%': {
       if (!ws) break;
-      if (ws.tabs.length === 0) {
-        store.addTab(ws.id, 'Terminal');
-      } else if (store.focusedTerminalId) {
-        // Split the focused pane horizontally
-        store.splitFocusedPane('horizontal');
-      } else {
-        // No focused pane — just add a new pane
-        const tab = ws.tabs.find(t => t.id === store.activeTabId);
-        if (tab && store.activeWorkspaceId) {
-          store.createTerminalInTab(store.activeWorkspaceId, tab.id);
-        }
-      }
+      if (ws.tabs.length === 0) { store.addTab(ws.id, 'Terminal'); }
+      else if (store.focusedTerminalId) { store.splitFocusedPane('horizontal'); }
+      else { const tab = ws.tabs.find(t => t.id === store.activeTabId); if (tab && store.activeWorkspaceId) store.createTerminalInTab(store.activeWorkspaceId, tab.id); }
       break;
     }
-    case '-':   // Split stacked (vertical)
-    case '"': {
+    case '-': case '"': {
       if (!ws) break;
-      if (store.focusedTerminalId) {
-        store.splitFocusedPane('vertical');
-      } else {
-        const tab = ws.tabs.find(t => t.id === store.activeTabId);
-        if (tab && store.activeWorkspaceId) {
-          store.createTerminalInTab(store.activeWorkspaceId, tab.id);
-        }
-      }
+      if (store.focusedTerminalId) { store.splitFocusedPane('vertical'); }
+      else { const tab = ws.tabs.find(t => t.id === store.activeTabId); if (tab && store.activeWorkspaceId) store.createTerminalInTab(store.activeWorkspaceId, tab.id); }
       break;
     }
-    case 't': {
-      if (ws) store.addTab(ws.id, `Tab ${ws.tabs.length + 1}`);
-      break;
-    }
+    case 's': // Enter shell chord
+      chordState = 'shell';
+      setChordLabel('SHELL');
+      return true; // stay in prefix mode
+    case 'a': // Enter agent chord
+      chordState = 'agent';
+      setChordLabel('AGENT');
+      return true;
+    case 'w': // Enter worktree chord
+      chordState = 'worktree';
+      setChordLabel('WORKTREE');
+      return true;
+    case 't': if (ws) store.addTab(ws.id, `Tab ${ws.tabs.length + 1}`); break;
     case 'n': store.cycleTab('next'); break;
     case 'p': store.cycleTab('prev'); break;
     case 'x': store.toggleContext(); break;
     case 'b': store.toggleBrowser(); break;
     case 'f': store.toggleFileTree(); break;
     case 'g': store.toggleGitDiff(); break;
-    case 'w': {
-      const count = store.workspaces.length;
-      store.createWorkspace(`Project ${count + 1}`);
-      break;
-    }
-    case 'd': {
-      if (store.focusedTerminalId) {
-        store.closeTerminal(store.focusedTerminalId);
-      }
-      break;
-    }
-    case 'a': {
-      // Launch first available agent (Claude) in the focused terminal's CWD
-      if (!ws || !store.activeTabId) break;
-      const agent = store.agents[0]; // Claude is typically first
-      if (!agent) break;
-      const focusedDir = store.focusedTerminalId
-        ? store.terminals[store.focusedTerminalId]?.working_dir ?? undefined
-        : undefined;
-      store.createAgentTerminalInTab(ws.id, store.activeTabId, agent.id, focusedDir);
-      break;
-    }
+    case 'd': if (store.focusedTerminalId) store.closeTerminal(store.focusedTerminalId); break;
   }
+  return false;
 }
 
 export default function App() {
@@ -110,6 +140,7 @@ export default function App() {
   } = useStore();
 
   const [prefixActive, setPrefixActive] = useState(false);
+  const [chordLabel, setChordLabel] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
 
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
@@ -233,9 +264,10 @@ export default function App() {
         e.preventDefault(); jsPrefixPending = true; setPrefixActive(true); return;
       }
       if (jsPrefixPending) {
-        e.preventDefault(); jsPrefixPending = false; setPrefixActive(false);
-        if (e.key === '?') setShowHelp(h => !h);
-        else handlePrefixCommand(e.key);
+        e.preventDefault();
+        if (e.key === '?') { jsPrefixPending = false; setPrefixActive(false); setShowHelp(h => !h); return; }
+        const stayInPrefix = handlePrefixCommand(e.key, setShowHelp, setChordLabel);
+        if (!stayInPrefix) { jsPrefixPending = false; setPrefixActive(false); setChordLabel(null); }
       }
     };
     document.addEventListener('keydown', handleKeyDown);
@@ -244,11 +276,11 @@ export default function App() {
 
   useEffect(() => {
     const unsub1 = listen<{ terminalId: string }>('prefix:activated', () => setPrefixActive(true));
-    const unsub2 = listen<{}>('prefix:deactivated', () => setPrefixActive(false));
+    const unsub2 = listen<{}>('prefix:deactivated', () => { setPrefixActive(false); chordState = null; setChordLabel(null); });
     const unsub3 = listen<{ key: string }>('prefix:command', ({ payload }) => {
-      setPrefixActive(false);
-      if (payload.key === '?') setShowHelp(h => !h);
-      else handlePrefixCommand(payload.key);
+      if (payload.key === '?') { setPrefixActive(false); setShowHelp(h => !h); return; }
+      const stay = handlePrefixCommand(payload.key, setShowHelp, setChordLabel);
+      if (!stay) { setPrefixActive(false); setChordLabel(null); }
     });
     return () => { unsub1.then(f => f()); unsub2.then(f => f()); unsub3.then(f => f()); };
   }, []);
@@ -316,7 +348,7 @@ export default function App() {
       </Allotment>
 
       {/* Portals — render overlays into document.body to escape Allotment stacking context */}
-      {prefixActive && createPortal(<div className="prefix-indicator">PREFIX</div>, document.body)}
+      {prefixActive && createPortal(<div className="prefix-indicator">{chordLabel ? `PREFIX ${chordLabel}` : 'PREFIX'}</div>, document.body)}
       {showHelp && createPortal(<KeyboardHelp onClose={() => setShowHelp(false)} />, document.body)}
     </div>
   );
@@ -330,16 +362,15 @@ function WelcomeScreen({ onStart }: { onStart: () => void }) {
         <div className="welcome-subtitle">Windows terminal multiplexer for AI agents</div>
         <button className="welcome-btn" onClick={onStart}>New Terminal</button>
         <div className="welcome-keys">
-          <div className="key-row"><kbd>Ctrl-A c</kbd> Split side-by-side</div>
-          <div className="key-row"><kbd>Ctrl-A -</kbd> Split stacked</div>
-          <div className="key-row"><kbd>Ctrl-A t</kbd> New tab</div>
-          <div className="key-row"><kbd>Ctrl-A n/p</kbd> Next/prev tab</div>
+          <div className="key-row"><kbd>Ctrl-A c</kbd> Split horizontal</div>
+          <div className="key-row"><kbd>Ctrl-A -</kbd> Split vertical</div>
+          <div className="key-row"><kbd>Ctrl-A s #</kbd> Shell picker</div>
+          <div className="key-row"><kbd>Ctrl-A a #</kbd> Agent picker</div>
+          <div className="key-row"><kbd>Ctrl-A w n</kbd> New worktree</div>
+          <div className="key-row"><kbd>Ctrl-A t/n/p</kbd> Tab: new/next/prev</div>
           <div className="key-row"><kbd>Ctrl-A d</kbd> Close pane</div>
-          <div className="key-row"><kbd>Ctrl-A x</kbd> Context panel</div>
-          <div className="key-row"><kbd>Ctrl-A b</kbd> Browser pane</div>
-          <div className="key-row"><kbd>Ctrl-A f</kbd> File tree</div>
-          <div className="key-row"><kbd>Ctrl-A g</kbd> Git diff</div>
-          <div className="key-row"><kbd>Ctrl-A ?</kbd> Keyboard help</div>
+          <div className="key-row"><kbd>Ctrl-A b/x/f/g</kbd> Panels</div>
+          <div className="key-row"><kbd>Ctrl-A ?</kbd> All shortcuts</div>
         </div>
       </div>
     </div>

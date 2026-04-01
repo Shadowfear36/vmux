@@ -5,22 +5,35 @@ type ShortcutItem = { section: string } | { key: string; desc: string };
 
 const SHORTCUTS: ShortcutItem[] = [
   { section: 'Panes' },
-  { key: 'Ctrl-A c', desc: 'Split side-by-side' },
-  { key: 'Ctrl-A -', desc: 'Split stacked (top/bottom)' },
+  { key: 'Ctrl-A c', desc: 'Split horizontal (default shell)' },
+  { key: 'Ctrl-A -', desc: 'Split vertical (default shell)' },
   { key: 'Ctrl-A d', desc: 'Close focused pane' },
-  { key: 'Drag pane', desc: 'Reorder panes via drag & drop' },
+
+  { section: 'Shell Picker (chord)' },
+  { key: 'Ctrl-A s 1-9', desc: 'Open shell #N horizontal' },
+  { key: 'Ctrl-A s - 1-9', desc: 'Open shell #N vertical' },
+
+  { section: 'Agent Picker (chord)' },
+  { key: 'Ctrl-A a 1-9', desc: 'Open agent #N horizontal' },
+  { key: 'Ctrl-A a - 1-9', desc: 'Open agent #N vertical' },
+
   { section: 'Tabs' },
   { key: 'Ctrl-A t', desc: 'New tab' },
   { key: 'Ctrl-A n', desc: 'Next tab' },
   { key: 'Ctrl-A p', desc: 'Previous tab' },
+
+  { section: 'Git Worktrees (chord)' },
+  { key: 'Ctrl-A w n', desc: 'New worktree (prompts branch)' },
+  { key: 'Ctrl-A w +', desc: 'New workspace' },
+
   { section: 'Panels' },
   { key: 'Ctrl-A b', desc: 'Toggle browser' },
   { key: 'Ctrl-A x', desc: 'Toggle context panel' },
   { key: 'Ctrl-A f', desc: 'Toggle file tree' },
-  { section: 'Workspace' },
-  { key: 'Ctrl-A w', desc: 'New workspace' },
   { key: 'Ctrl-A g', desc: 'Toggle git diff panel' },
-  { section: 'Help' },
+
+  { section: 'Other' },
+  { key: 'Ctrl-A Ctrl-A', desc: 'Send literal Ctrl-A' },
   { key: 'Ctrl-A ?', desc: 'Toggle this help' },
 ];
 
@@ -49,7 +62,7 @@ export function KeyboardHelp({ onClose }: Props) {
           )}
         </div>
         <div className="kb-help-footer">
-          Prefix: <kbd>Ctrl-A</kbd> then press the key
+          Prefix: <kbd>Ctrl-A</kbd> then key. Chords: prefix → category → action.
         </div>
       </div>
     </div>

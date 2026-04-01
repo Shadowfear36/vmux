@@ -90,15 +90,16 @@ export function Sidebar({ onShowHelp }: SidebarProps) {
       {/* Agent launchers */}
       {agents.length > 0 && (
         <div className="sidebar-section">
-          <div className="sidebar-section-label">AGENTS</div>
-          {agents.map(agent => (
+          <div className="sidebar-section-label">AGENTS <span style={{fontSize:9,color:'#565f89'}}>Ctrl-A a #</span></div>
+          {agents.map((agent, i) => (
             <button
               key={agent.id}
               className="agent-launch-btn"
               onClick={() => addAgentPane(agent.id)}
-              title={`Launch ${agent.name}`}
+              title={`Launch ${agent.name} (Ctrl-A a ${i+1})`}
             >
               <span className="agent-launch-icon">{agent.icon}</span>
+              <span style={{fontSize:10,color:'#565f89',marginRight:4}}>{i+1}</span>
               {agent.name}
             </button>
           ))}

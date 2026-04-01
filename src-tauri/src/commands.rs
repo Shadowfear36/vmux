@@ -897,6 +897,23 @@ pub fn restore_terminal_scrollback(
     Ok(false)
 }
 
+// ─── Git worktree commands ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn create_worktree(repo_path: String, branch: String) -> Result<String, String> {
+    crate::worktree::create_worktree(&repo_path, &branch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_worktrees(repo_path: String) -> Result<Vec<crate::worktree::WorktreeInfo>, String> {
+    crate::worktree::list_worktrees(&repo_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_worktree(repo_path: String, branch: String) -> Result<(), String> {
+    crate::worktree::delete_worktree(&repo_path, &branch).map_err(|e| e.to_string())
+}
+
 // ─── File tree ───────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]

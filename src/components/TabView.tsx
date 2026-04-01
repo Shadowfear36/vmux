@@ -1,7 +1,7 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../store';
-import { TerminalPane } from './TerminalPane';
-import type { Tab, Pane } from '../types';
+import type { Tab } from '../types';
+import { SplitTreeView, SplitNode, makeLeaf, splitNode, removeNode, getTerminalIds } from './SplitTree';
 import './TabView.css';
 
 interface Props {
@@ -10,12 +10,75 @@ interface Props {
 
 export function TabView({ tab }: Props) {
   const {
-    createTerminalInTab, focusedTerminalId, focusTerminal,
-    activeWorkspaceId, reorderPanes,
+    createTerminalInTab, activeWorkspaceId,
     shells, setDefaultShell,
+    splitTrees, setSplitTree,
   } = useStore();
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
-  const dragSrcId = useRef<string | null>(null);
+
+  const tree = splitTrees[tab.id] ?? null;
+
+  // Sync tree with pane list: if panes exist but no tree, build one
+  useEffect(() => {
+    const terminalPanes = tab.panes.filter(p => p.kind.type === 'terminal');
+    if (terminalPanes.length === 0) return;
+
+    const existingIds = tree ? getTerminalIds(tree) : [];
+    const paneIds = terminalPanes.map(p => p.kind.type === 'terminal' ? p.kind.terminal_id : '').filter(Boolean);
+
+    // If tree already matches panes, nothing to do
+    if (existingIds.length === paneIds.length && existingIds.every(id => paneIds.includes(id))) return;
+
+    // No tree yet: try restoring from persisted layout, else build flat
+    if (!tree) {
+      let restored = false;
+      if (tab.layout) {
+        try {
+          const parsed = JSON.parse(tab.layout) as SplitNode;
+          // Validate that the restored tree's terminal IDs match current panes
+          const restoredIds = getTerminalIds(parsed);
+          if (restoredIds.length === paneIds.length && restoredIds.every(id => paneIds.includes(id))) {
+            setSplitTree(tab.id, parsed);
+            restored = true;
+          }
+        } catch { /* invalid JSON, fall through */ }
+      }
+      if (!restored) {
+        let node: SplitNode = makeLeaf(paneIds[0]);
+        for (let i = 1; i < paneIds.length; i++) {
+          node = {
+            type: 'split',
+            direction: 'horizontal',
+            children: [node, makeLeaf(paneIds[i])],
+            ratio: i / (i + 1),
+          };
+        }
+        setSplitTree(tab.id, node);
+      }
+      return;
+    }
+
+    // Tree exists but new pane was added (not by split) — append it
+    const newIds = paneIds.filter(id => !existingIds.includes(id));
+    const removedIds = existingIds.filter(id => !paneIds.includes(id));
+    let updated: SplitNode | null = tree;
+    for (const id of removedIds) {
+      updated = updated ? removeNode(updated, id) : null;
+    }
+    for (const id of newIds) {
+      if (updated) {
+        updated = { type: 'split', direction: 'horizontal', children: [updated, makeLeaf(id)], ratio: 0.5 };
+      } else {
+        updated = makeLeaf(id);
+      }
+    }
+    if (updated) setSplitTree(tab.id, updated);
+  }, [tab.panes, tab.id]);
+
+  const handleUpdateRatio = useCallback((path: number[], ratio: number) => {
+    if (!tree) return;
+    const updated = updateRatioAtPath(tree, path, ratio);
+    setSplitTree(tab.id, updated);
+  }, [tree, tab.id, setSplitTree]);
 
   // Show shell picker when tab is empty
   if (tab.panes.length === 0) {
@@ -44,63 +107,25 @@ export function TabView({ tab }: Props) {
     );
   }
 
-  const terminalPanes = tab.panes.filter(p => p.kind.type === 'terminal');
-  const isVertical = tab.direction === 'vertical';
-
-  const handleDragStart = (paneId: string) => { dragSrcId.current = paneId; };
-  const handleDragOver = (e: React.DragEvent, paneId: string) => {
-    e.preventDefault();
-    if (dragSrcId.current && dragSrcId.current !== paneId) setDragOverId(paneId);
-  };
-  const handleDrop = (targetPaneId: string) => {
-    setDragOverId(null);
-    const srcId = dragSrcId.current;
-    dragSrcId.current = null;
-    if (!srcId || srcId === targetPaneId || !activeWorkspaceId) return;
-    const ids = terminalPanes.map(p => p.id);
-    const srcIdx = ids.indexOf(srcId);
-    const tgtIdx = ids.indexOf(targetPaneId);
-    if (srcIdx === -1 || tgtIdx === -1) return;
-    ids.splice(srcIdx, 1);
-    ids.splice(tgtIdx, 0, srcId);
-    reorderPanes(activeWorkspaceId, tab.id, ids);
-  };
-  const handleDragEnd = () => { dragSrcId.current = null; setDragOverId(null); };
+  if (!tree) return null;
 
   return (
-    <div className={`tab-layout ${isVertical ? 'tab-layout-stacked' : 'tab-layout-side'}`}>
-      {terminalPanes.map(pane => {
-        const tid = getTerminalId(pane);
-        return (
-          <div
-            key={pane.id}
-            className={`tab-pane ${dragOverId === pane.id ? 'tab-pane-drag-over' : ''}`}
-            draggable
-            onDragStart={() => handleDragStart(pane.id)}
-            onDragOver={(e) => handleDragOver(e, pane.id)}
-            onDragLeave={() => setDragOverId(null)}
-            onDrop={() => handleDrop(pane.id)}
-            onDragEnd={handleDragEnd}
-          >
-            <PaneView
-              pane={pane}
-              isFocused={focusedTerminalId === tid}
-              onFocus={() => tid && focusTerminal(tid)}
-            />
-          </div>
-        );
-      })}
+    <div className="tab-layout">
+      <SplitTreeView node={tree} onUpdateRatio={handleUpdateRatio} />
     </div>
   );
 }
 
-function PaneView({ pane, isFocused, onFocus }: { pane: Pane; isFocused: boolean; onFocus: () => void }) {
-  if (pane.kind.type === 'terminal') {
-    return <TerminalPane terminalId={pane.kind.terminal_id} isFocused={isFocused} onFocus={onFocus} />;
+/** Immutably update the ratio at a given path in the tree. */
+function updateRatioAtPath(node: SplitNode, path: number[], ratio: number): SplitNode {
+  if (path.length === 0 && node.type === 'split') {
+    return { ...node, ratio };
   }
-  return <div />;
-}
-
-function getTerminalId(pane: Pane): string | null {
-  return pane.kind.type === 'terminal' ? pane.kind.terminal_id : null;
+  if (node.type === 'split' && path.length > 0) {
+    const [idx, ...rest] = path;
+    const children: [SplitNode, SplitNode] = [node.children[0], node.children[1]];
+    children[idx] = updateRatioAtPath(children[idx], rest, ratio);
+    return { ...node, children };
+  }
+  return node;
 }

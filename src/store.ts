@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry, BrowserTabInfo } from './types';
+import { removeNode, splitNode, type SplitNode } from './components/SplitTree';
 
 interface AppStore {
   // Shells
@@ -35,6 +36,12 @@ interface AppStore {
   // UI state
   sidebarWidth: number;
   showContext: boolean;
+
+  // Split tree state per tab (tabId → SplitNode)
+  splitTrees: Record<string, import('./components/SplitTree').SplitNode>;
+  setSplitTree: (tabId: string, tree: import('./components/SplitTree').SplitNode) => void;
+  splitFocusedPane: (direction: 'horizontal' | 'vertical') => Promise<void>;
+  saveWorkspaceState: () => Promise<void>;
 
   // Actions
   loadWorkspaces: () => Promise<void>;
@@ -186,6 +193,7 @@ export const useStore = create<AppStore>((set, get) => ({
   showContext: false,
   showFileTree: false,
   showGitDiff: false,
+  splitTrees: {},
   claudeSessionsByDir: {},
 
   loadWorkspaces: async () => {
@@ -421,7 +429,18 @@ export const useStore = create<AppStore>((set, get) => ({
           ),
         })),
       }));
-      return { terminals: rest, workspaces };
+      // Also remove from split trees
+      const splitTrees = { ...s.splitTrees };
+      for (const [tabId, tree] of Object.entries(splitTrees)) {
+        const updated = removeNode(tree as SplitNode, terminalId);
+        if (updated) {
+          splitTrees[tabId] = updated;
+        } else {
+          delete splitTrees[tabId];
+        }
+      }
+
+      return { terminals: rest, workspaces, splitTrees };
     });
   },
 
@@ -448,11 +467,23 @@ export const useStore = create<AppStore>((set, get) => ({
     set(s => {
       const term = s.terminals[terminalId];
       if (!term || term.working_dir === cwd) return s;
+
+      // Update pane's working_dir in workspace state for persistence
+      const workspaces = s.workspaces.map(ws => ({
+        ...ws,
+        tabs: ws.tabs.map(t => ({
+          ...t,
+          panes: t.panes.map(p =>
+            p.kind.type === 'terminal' && p.kind.terminal_id === terminalId
+              ? { ...p, kind: { ...p.kind, working_dir: cwd } }
+              : p
+          ),
+        })),
+      }));
+
       return {
-        terminals: {
-          ...s.terminals,
-          [terminalId]: { ...term, working_dir: cwd },
-        },
+        terminals: { ...s.terminals, [terminalId]: { ...term, working_dir: cwd } },
+        workspaces,
       };
     });
   },
@@ -724,6 +755,66 @@ export const useStore = create<AppStore>((set, get) => ({
 
   toggleFileTree: () => set(s => ({ showFileTree: !s.showFileTree })),
   toggleGitDiff: () => set(s => ({ showGitDiff: !s.showGitDiff })),
+
+  setSplitTree: (tabId, tree) => {
+    set(s => ({ splitTrees: { ...s.splitTrees, [tabId]: tree } }));
+  },
+
+  saveWorkspaceState: async () => {
+    const state = get();
+    const ws = state.workspaces.find(w => w.id === state.activeWorkspaceId);
+    if (!ws) return;
+    // Embed split tree layouts into tab.layout fields
+    const wsWithLayouts = {
+      ...ws,
+      tabs: ws.tabs.map(t => ({
+        ...t,
+        layout: state.splitTrees[t.id] ? JSON.stringify(state.splitTrees[t.id]) : t.layout,
+      })),
+    };
+    await invoke('save_workspace_state', {
+      workspaceId: ws.id,
+      workspaceJson: JSON.stringify(wsWithLayouts),
+    }).catch(() => {});
+  },
+
+  splitFocusedPane: async (direction) => {
+    const state = get();
+    const { focusedTerminalId, activeWorkspaceId, activeTabId } = state;
+    if (!focusedTerminalId || !activeWorkspaceId || !activeTabId) return;
+
+    // Create a new terminal
+    const ws = state.workspaces.find(w => w.id === activeWorkspaceId);
+    const effectiveDir = state.terminals[focusedTerminalId]?.working_dir
+      ?? ws?.directory ?? null;
+    const shellId = state.defaultShellId ?? null;
+    const info: TerminalInfo = await invoke('create_terminal', {
+      workingDir: effectiveDir,
+      shellId,
+    });
+    set(s => ({ terminals: { ...s.terminals, [info.id]: info } }));
+
+    // Register pane in workspace + update split tree in a single batch
+    const pane = await invoke('add_pane', {
+      workspaceId: activeWorkspaceId,
+      tabId: activeTabId,
+      kind: { type: 'terminal', terminal_id: info.id, shell_id: shellId },
+    });
+
+    set(s => {
+      const workspaces = s.workspaces.map(w =>
+        w.id === activeWorkspaceId
+          ? { ...w, tabs: w.tabs.map(t => t.id === activeTabId ? { ...t, panes: [...t.panes, pane as any] } : t) }
+          : w
+      );
+      // Update split tree in the same batch to avoid sync race
+      const tree = s.splitTrees[activeTabId];
+      const splitTrees = tree
+        ? { ...s.splitTrees, [activeTabId]: splitNode(tree, focusedTerminalId, info.id, direction) }
+        : s.splitTrees;
+      return { workspaces, splitTrees, focusedTerminalId: info.id };
+    });
+  },
 
   setSidebarWidth: (w) => set({ sidebarWidth: w }),
   toggleContext: () => set(s => ({ showContext: !s.showContext })),

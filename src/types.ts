@@ -37,7 +37,7 @@ export interface PaneBounds {
 }
 
 export type PaneKind =
-  | { type: 'terminal'; terminal_id: string; shell_id?: string }
+  | { type: 'terminal'; terminal_id: string; shell_id?: string; working_dir?: string }
   | { type: 'context' }
   | { type: 'browser'; url: string };
 

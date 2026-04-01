@@ -343,6 +343,21 @@ pub fn update_layout(state: State<'_, Mutex<AppState>>, workspace_id: String, ta
         .map_err(|e| e.to_string())
 }
 
+/// Save the full workspace state to SQLite (pane CWDs, layout, etc).
+#[tauri::command]
+pub fn save_workspace_state(
+    state: State<'_, Mutex<AppState>>,
+    workspace_id: String,
+    workspace_json: String,
+) -> Result<(), String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    if let Ok(ws) = serde_json::from_str::<Workspace>(&workspace_json) {
+        s.workspaces.workspaces.insert(workspace_id.clone(), ws.clone());
+        s.workspaces.save_workspace(&ws).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Restore terminals for persisted panes after app restart.
 /// Spawns fresh PTYs for each saved terminal pane, updates pane terminal_ids.
 #[tauri::command]
@@ -359,20 +374,27 @@ pub fn restore_workspace_terminals(
     // (tab_id, pane_id, new PaneKind)
     let mut updates: Vec<(String, String, PaneKind)> = Vec::new();
 
+    // Use workspace directory as fallback for terminals without a saved CWD
+    let ws_dir = ws.directory.clone();
+
     for tab in &ws.tabs {
         for pane in &tab.panes {
-            if let PaneKind::Terminal { shell_id, .. } = &pane.kind {
+            if let PaneKind::Terminal { shell_id, working_dir, .. } = &pane.kind {
                 let shell = shell_id.as_deref()
                     .and_then(|id| s.shells.iter().find(|sh| sh.id == id))
                     .or_else(|| s.shells.first())
                     .cloned();
 
                 if let Some(shell) = shell {
-                    match s.terminals.spawn(None, &shell) {
+                    // Priority: saved pane CWD > workspace directory > default
+                    let cwd = working_dir.as_deref()
+                        .or(ws_dir.as_deref());
+                    match s.terminals.spawn(cwd.map(|s| s.to_string()), &shell) {
                         Ok(info) => {
                             updates.push((tab.id.clone(), pane.id.clone(), PaneKind::Terminal {
                                 terminal_id: info.id.clone(),
                                 shell_id: Some(shell.id.clone()),
+                                working_dir: cwd.map(|s| s.to_string()),
                             }));
                             infos.push(info);
                         }

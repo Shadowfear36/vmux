@@ -41,14 +41,14 @@ function handlePrefixCommand(key: string) {
       if (!ws) break;
       if (ws.tabs.length === 0) {
         store.addTab(ws.id, 'Terminal');
+      } else if (store.focusedTerminalId) {
+        // Split the focused pane horizontally
+        store.splitFocusedPane('horizontal');
       } else {
+        // No focused pane — just add a new pane
         const tab = ws.tabs.find(t => t.id === store.activeTabId);
         if (tab && store.activeWorkspaceId) {
-          // Set direction to horizontal, then add pane
-          if (tab.direction !== 'horizontal') {
-            store.setTabDirection(store.activeWorkspaceId, tab.id, 'horizontal');
-          }
-          setTimeout(() => store.createTerminalInTab(store.activeWorkspaceId!, tab.id), 0);
+          store.createTerminalInTab(store.activeWorkspaceId, tab.id);
         }
       }
       break;
@@ -56,13 +56,13 @@ function handlePrefixCommand(key: string) {
     case '-':   // Split stacked (vertical)
     case '"': {
       if (!ws) break;
-      const tab = ws.tabs.find(t => t.id === store.activeTabId);
-      if (tab && store.activeWorkspaceId) {
-        // Set direction to vertical, then add pane
-        if (tab.direction !== 'vertical') {
-          store.setTabDirection(store.activeWorkspaceId, tab.id, 'vertical');
+      if (store.focusedTerminalId) {
+        store.splitFocusedPane('vertical');
+      } else {
+        const tab = ws.tabs.find(t => t.id === store.activeTabId);
+        if (tab && store.activeWorkspaceId) {
+          store.createTerminalInTab(store.activeWorkspaceId, tab.id);
         }
-        setTimeout(() => store.createTerminalInTab(store.activeWorkspaceId!, tab.id), 0);
       }
       break;
     }
@@ -133,6 +133,16 @@ export default function App() {
         }
       }
     })();
+  }, []);
+
+  // ── Auto-save workspace state periodically + on close ─────────────────
+  useEffect(() => {
+    const interval = setInterval(() => {
+      useStore.getState().saveWorkspaceState();
+    }, 10000); // Save every 10 seconds
+    const handleBeforeUnload = () => { useStore.getState().saveWorkspaceState(); };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => { clearInterval(interval); window.removeEventListener('beforeunload', handleBeforeUnload); };
   }, []);
 
   // ── Event listeners ──────────────────────────────────────────────────────

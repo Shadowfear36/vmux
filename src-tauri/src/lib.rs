@@ -68,6 +68,7 @@ pub fn run() {
             commands::add_pane,
             commands::restore_workspace_terminals,
             commands::update_layout,
+            commands::save_workspace_state,
             commands::remove_pane,
             commands::rename_workspace,
             commands::set_workspace_directory,

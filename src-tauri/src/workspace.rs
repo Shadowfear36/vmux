@@ -14,6 +14,8 @@ pub enum PaneKind {
         terminal_id: TerminalId,
         #[serde(default)]
         shell_id: Option<String>,
+        #[serde(default)]
+        working_dir: Option<String>,
     },
     Context,
     Browser { url: String },

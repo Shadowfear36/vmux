@@ -37,7 +37,7 @@ export interface PaneBounds {
 }
 
 export type PaneKind =
-  | { type: 'terminal'; terminal_id: string; shell_id?: string }
+  | { type: 'terminal'; terminal_id: string; shell_id?: string; working_dir?: string }
   | { type: 'context' }
   | { type: 'browser'; url: string };
 
@@ -59,6 +59,7 @@ export interface Workspace {
   name: string;
   tabs: Tab[];
   active_tab_id: string | null;
+  directory: string | null;
 }
 
 export interface ContextEntry {
@@ -75,6 +76,56 @@ export interface ContextEntry {
 export interface BrowserTabInfo {
   id: string;
   url: string;
+  title: string;
+}
+
+export interface BrowserHistoryEntry {
+  id: string;
+  url: string;
+  title: string | null;
+  visited_at: number;
+}
+
+// ─── Context Manager types ───────────────────────────────────────────────────
+
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface Conversation {
+  id: string;
+  project_id: string;
+  agent_type: string;
+  session_id: string | null;
+  title: string | null;
+  started_at: number;
+  ended_at: number | null;
+  source: string;
+  metadata: string;
+}
+
+export interface ConversationChunk {
+  id: string;
+  conversation_id: string;
+  chunk_index: number;
+  role: string;
+  content: string;
+  has_embedding: boolean;
+  created_at: number;
+}
+
+export interface AgentConfig {
+  id: string;
+  project_id: string;
+  name: string;
+  content: string;
+  auto_generated: boolean;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface GitMeta {

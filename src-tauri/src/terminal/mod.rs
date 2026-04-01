@@ -83,6 +83,8 @@ pub struct TerminalPane {
     /// Last PTY column/row size — used to skip no-op resizes.
     last_cols: u16,
     last_rows: u16,
+    /// Captured terminal output for agent sessions (shared with PTY output task).
+    pub capture_buf: Option<Arc<std::sync::Mutex<String>>>,
 }
 
 impl TerminalPane {
@@ -122,6 +124,7 @@ impl TerminalPane {
             events_rx: Some(events_rx),
             last_cols: 80,
             last_rows: 24,
+            capture_buf: None, // shells don't capture
         };
         Ok((pane, pty_rx))
     }
@@ -133,6 +136,7 @@ impl TerminalPane {
         agent: &AgentProfile,
         session_name: Option<String>,
         resume_session: Option<String>,
+        continue_session: bool,
     ) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
         let id = Uuid::new_v4().to_string();
         let effective_dir = working_dir.or_else(|| {
@@ -145,27 +149,26 @@ impl TerminalPane {
         let mut notify_file: Option<String> = None;
 
         if agent.id == "claude" {
-            // Set VMUX=1 so hooks/scripts know they're inside vmux
             env.push(("VMUX".into(), "1".into()));
 
-            // Create notify side-channel file for hook events
             let notify_dir = std::env::temp_dir().join("vmux");
             let _ = std::fs::create_dir_all(&notify_dir);
             let notify_path = notify_dir.join(format!("{}.notify", &id));
-            // Create empty file
             let _ = std::fs::File::create(&notify_path);
             let path_str = notify_path.to_string_lossy().to_string();
             env.push(("VMUX_NOTIFY_FILE".into(), path_str.clone()));
             notify_file = Some(path_str);
 
-            // Tag session with workspace/tab name
             if let Some(name) = &session_name {
                 args.push("--name".into());
                 args.push(name.clone());
             }
 
-            // Resume a previous session
-            if let Some(sid) = &resume_session {
+            // Session persistence: --continue resumes last session in CWD,
+            // --resume <id> resumes a specific session
+            if continue_session {
+                args.push("--continue".into());
+            } else if let Some(sid) = &resume_session {
                 args.push("--resume".into());
                 args.push(sid.clone());
             }
@@ -192,6 +195,9 @@ impl TerminalPane {
             notify_file,
         };
 
+        // Agent terminals capture output for context store
+        let capture_buf = Some(Arc::new(std::sync::Mutex::new(String::new())));
+
         let pane = TerminalPane {
             info,
             pty,
@@ -201,6 +207,7 @@ impl TerminalPane {
             events_rx: Some(events_rx),
             last_cols: 80,
             last_rows: 24,
+            capture_buf,
         };
         Ok((pane, pty_rx))
     }
@@ -255,12 +262,23 @@ impl TerminalPane {
         let grid_pty = self.grid.clone();
         let notif_tx = notification_tx;
         let app_osc = app.clone();
+        let capture = self.capture_buf.clone();
         tokio::spawn(async move {
             use crate::osc::OscAction;
             let mut osc = OscParser::new();
             let mut rx  = pty_rx;
             while let Some(bytes) = rx.recv().await {
                 let text = String::from_utf8_lossy(&bytes);
+
+                // Capture output for agent terminals (for context store)
+                if let Some(ref buf) = capture {
+                    if let Ok(mut b) = buf.lock() {
+                        // Cap at 2MB to prevent unbounded growth
+                        if b.len() < 2_000_000 {
+                            b.push_str(&text);
+                        }
+                    }
+                }
 
                 // Parse all OSC actions (notifications + browser + cwd)
                 for action in osc.parse_actions(&text) {
@@ -517,8 +535,9 @@ impl TerminalManager {
         agent: &AgentProfile,
         session_name: Option<String>,
         resume_session: Option<String>,
+        continue_session: bool,
     ) -> Result<TerminalInfo> {
-        let (pane, pty_rx) = TerminalPane::spawn_agent(working_dir, agent, session_name, resume_session)?;
+        let (pane, pty_rx) = TerminalPane::spawn_agent(working_dir, agent, session_name, resume_session, continue_session)?;
         let info = pane.info.clone();
         let id = info.id.clone();
         self.panes.insert(id.clone(), pane);

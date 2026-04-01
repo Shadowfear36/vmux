@@ -8,6 +8,9 @@ mod commands;
 mod theme;
 mod browser;
 mod claude_hooks;
+mod transcript;
+mod embeddings;
+mod rag;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -23,6 +26,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()
                 .expect("failed to get app data dir");
@@ -64,8 +68,10 @@ pub fn run() {
             commands::add_pane,
             commands::restore_workspace_terminals,
             commands::update_layout,
+            commands::save_workspace_state,
             commands::remove_pane,
             commands::rename_workspace,
+            commands::set_workspace_directory,
             commands::delete_workspace,
             commands::reorder_panes,
             commands::set_tab_direction,
@@ -92,8 +98,22 @@ pub fn run() {
             commands::switch_browser_tab,
             commands::list_browser_tabs,
             commands::browser_open_devtools,
+            commands::open_browser_tab,
+            commands::browser_history,
+            commands::clear_browser_history,
             commands::list_directory,
             commands::install_claude_hooks,
+            commands::list_projects,
+            commands::ensure_project,
+            commands::list_conversations,
+            commands::get_conversation_chunks,
+            commands::import_transcripts,
+            commands::get_agent_config,
+            commands::save_agent_config,
+            commands::export_agent_config,
+            commands::rag_search,
+            commands::embed_chunks,
+            commands::set_embedding_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vmux");

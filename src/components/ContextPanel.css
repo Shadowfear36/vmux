@@ -226,6 +226,144 @@
   font-family: inherit;
 }
 .ctx-action-btn:hover { color: #a9b1d6; border-color: #565f89; }
+.ctx-action-delete { color: #f7768e !important; }
+.ctx-action-delete:hover { border-color: #f7768e; }
+
+.ctx-edit-form { display: flex; flex-direction: column; gap: 6px; }
+.ctx-edit-actions { display: flex; gap: 6px; }
+
+/* ─── Tabs ─────────────────────────────────────────────────────────────── */
+
+.ctx-tabs {
+  display: flex;
+  border-bottom: 1px solid #292e42;
+  background: #16161e;
+}
+
+.ctx-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #565f89;
+  font-size: 11px;
+  font-family: inherit;
+  padding: 8px 4px;
+  cursor: pointer;
+  transition: color 0.1s, border-color 0.1s;
+}
+.ctx-tab:hover { color: #a9b1d6; }
+.ctx-tab-active { color: #7aa2f7; border-bottom-color: #7aa2f7; }
+
+/* ─── Select dropdown ──────────────────────────────────────────────────── */
+
+.ctx-select {
+  flex: 1;
+  background: #1a1b26;
+  border: 1px solid #292e42;
+  color: #a9b1d6;
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  outline: none;
+  font-family: inherit;
+}
+.ctx-select:focus { border-color: #7aa2f7; }
+
+/* ─── Conversation chunks ──────────────────────────────────────────────── */
+
+.ctx-back-btn {
+  background: none;
+  border: none;
+  color: #7aa2f7;
+  font-size: 11px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.ctx-back-btn:hover { text-decoration: underline; }
+
+.ctx-conv-chunks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.ctx-chunk {
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 11px;
+}
+
+.ctx-chunk-role {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+  letter-spacing: 0.05em;
+}
+
+.ctx-chunk-user { background: #1a1b26; border: 1px solid #292e42; }
+.ctx-chunk-user .ctx-chunk-role { color: #7aa2f7; }
+
+.ctx-chunk-assistant { background: #1f2335; border: 1px solid #292e42; }
+.ctx-chunk-assistant .ctx-chunk-role { color: #9ece6a; }
+
+.ctx-chunk-mixed { background: #1a1b26; border: 1px solid #292e42; }
+.ctx-chunk-mixed .ctx-chunk-role { color: #e0af68; }
+
+.ctx-chunk-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #a9b1d6;
+  font-family: inherit;
+  font-size: 11px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* ─── Agent.md editor ──────────────────────────────────────────────────── */
+
+.ctx-agent-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 8px 12px;
+  gap: 8px;
+}
+
+.ctx-agent-textarea {
+  flex: 1;
+  background: #1a1b26;
+  border: 1px solid #292e42;
+  color: #a9b1d6;
+  font-size: 12px;
+  padding: 10px;
+  border-radius: 4px;
+  outline: none;
+  font-family: inherit;
+  resize: none;
+  min-height: 200px;
+}
+.ctx-agent-textarea:focus { border-color: #7aa2f7; }
+
+.ctx-agent-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ctx-save-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ctx-new-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 
 .ctx-action-delete { color: #f7768e44; }
 .ctx-action-delete:hover { color: #f7768e; border-color: #f7768e; }

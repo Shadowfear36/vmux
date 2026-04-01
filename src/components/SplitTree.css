@@ -1,0 +1,47 @@
+.split-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.split-h { flex-direction: row; }
+.split-v { flex-direction: column; }
+
+.split-child {
+  overflow: hidden;
+  position: relative;
+}
+
+/* In a horizontal container, children stretch full height */
+.split-h > .split-child { height: 100%; }
+/* In a vertical container, children stretch full width */
+.split-v > .split-child { width: 100%; }
+
+.split-leaf {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── Divider ──────────────────────────────────────────────────────────────── */
+
+.split-divider {
+  flex-shrink: 0;
+  background: #292e42;
+  transition: background 0.15s;
+  z-index: 1;
+}
+.split-divider:hover { background: #7aa2f7; }
+
+.split-divider-h {
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.split-divider-v {
+  height: 4px;
+  width: 100%;
+  cursor: row-resize;
+}

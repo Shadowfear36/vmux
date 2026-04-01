@@ -46,6 +46,8 @@ export function TerminalPane({ terminalId, isFocused, onFocus }: Props) {
 
   const boundsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialSentRef = useRef(false);
+  const lastBoundsRef = useRef('');
+  const pendingRef = useRef(false);
 
   const reportBounds = useCallback(() => {
     const el = containerRef.current;
@@ -59,20 +61,31 @@ export function TerminalPane({ terminalId, isFocused, onFocus }: Props) {
       height: Math.round(rect.height * dpr),
     };
 
-    // Skip tiny transient bounds from layout animations
     if (bounds.width < 50 || bounds.height < 30) return;
 
-    // Send first call immediately (triggers Phase 2 init).
-    // Subsequent calls are debounced to avoid flooding during resize.
+    // Skip if bounds haven't actually changed
+    const key = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`;
+    if (key === lastBoundsRef.current) return;
+    lastBoundsRef.current = key;
+
+    // First call: immediate (triggers Phase 2 init).
     if (!initialSentRef.current) {
       initialSentRef.current = true;
       setTerminalBounds(terminalId, bounds);
       return;
     }
+
+    // Subsequent: debounce at 60ms and serialize (skip if a call is in-flight)
     if (boundsTimerRef.current) clearTimeout(boundsTimerRef.current);
-    boundsTimerRef.current = setTimeout(() => {
-      setTerminalBounds(terminalId, bounds);
-    }, 16);
+    boundsTimerRef.current = setTimeout(async () => {
+      if (pendingRef.current) return;
+      pendingRef.current = true;
+      try {
+        await setTerminalBounds(terminalId, bounds);
+      } finally {
+        pendingRef.current = false;
+      }
+    }, 60);
   }, [terminalId, setTerminalBounds]);
 
   useEffect(() => {
@@ -81,10 +94,17 @@ export function TerminalPane({ terminalId, isFocused, onFocus }: Props) {
   }, [terminalId]);
 
   useEffect(() => {
-    reportBounds();
+    // Delay first bounds report to let flex layout settle after a split.
+    // Stagger by a random offset to avoid concurrent wgpu Phase 2 inits
+    // which can crash when multiple surfaces init simultaneously.
+    const delay = initialSentRef.current ? 0 : 100 + Math.random() * 200;
+    const initDelay = setTimeout(() => {
+      reportBounds();
+    }, delay);
     const observer = new ResizeObserver(reportBounds);
     if (containerRef.current) observer.observe(containerRef.current);
-    return () => observer.disconnect();
+    const poll = setInterval(reportBounds, 300);
+    return () => { clearTimeout(initDelay); observer.disconnect(); clearInterval(poll); };
   }, [reportBounds]);
 
   useEffect(() => {

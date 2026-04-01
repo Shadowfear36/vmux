@@ -149,6 +149,36 @@ export default function App() {
     return () => { unsub.then(f => f()); };
   }, []);
 
+  // ── Claude Code hook events (via notify file watcher) ───────────────────
+  useEffect(() => {
+    const unsub = listen<{ terminalId: string; event: string; data: any }>(
+      'claude:event',
+      ({ payload }) => {
+        const store = useStore.getState();
+        switch (payload.event) {
+          case 'stop':
+            store.setNotification(payload.terminalId, 'Claude finished');
+            break;
+          case 'notification':
+            store.setNotification(
+              payload.terminalId,
+              payload.data?.message ?? 'Claude notification',
+            );
+            break;
+          case 'session-start':
+            if (payload.data?.session_id) {
+              store.setClaudeSessionId(payload.terminalId, payload.data.session_id);
+            }
+            break;
+          case 'task-done':
+            store.setNotification(payload.terminalId, 'Task completed');
+            break;
+        }
+      }
+    );
+    return () => { unsub.then(f => f()); };
+  }, []);
+
   useEffect(() => {
     const unsubs: Promise<() => void>[] = [];
     unsubs.push(listen<{ terminalId: string; url: string }>('agent:browser-open', ({ payload }) => {

@@ -7,6 +7,7 @@ mod state;
 mod commands;
 mod theme;
 mod browser;
+mod claude_hooks;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -92,6 +93,7 @@ pub fn run() {
             commands::list_browser_tabs,
             commands::browser_open_devtools,
             commands::list_directory,
+            commands::install_claude_hooks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vmux");

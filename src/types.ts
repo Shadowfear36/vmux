@@ -17,6 +17,7 @@ export interface TerminalInfo {
   pid: number | null;
   is_agent: boolean;
   agent_id: string | null;
+  claude_session_id: string | null;
 }
 
 export interface AgentProfile {

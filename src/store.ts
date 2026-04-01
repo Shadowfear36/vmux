@@ -56,10 +56,14 @@ interface AppStore {
   clearNotification: (terminalId: string) => Promise<void>;
   setTerminalCwd: (terminalId: string, cwd: string) => void;
   setTerminalTitle: (terminalId: string, title: string) => void;
+  setClaudeSessionId: (terminalId: string, sessionId: string) => void;
+
+  // Claude session resume: last session ID per working directory
+  claudeSessionsByDir: Record<string, string>;
 
   loadContext: (workspaceId?: string) => Promise<void>;
 
-  openBrowser: (bounds: PaneBounds, url?: string) => Promise<string>;
+  openBrowser: (bounds: PaneBounds, url?: string) => Promise<void>;
   openBrowserTab: (bounds: PaneBounds, url?: string) => Promise<void>;
   closeBrowserTab: (tabId: string) => Promise<void>;
   switchBrowserTab: (tabId: string) => Promise<void>;
@@ -122,9 +126,21 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   createAgentTerminalInTab: async (workspaceId, tabId, agentId, workingDir) => {
+    const state = get();
+    const ws = state.workspaces.find(w => w.id === workspaceId);
+    const tab = ws?.tabs.find(t => t.id === tabId);
+    const sessionName = `${ws?.name ?? 'vmux'}-${tab?.name ?? 'tab'}`;
+
+    // Check for a previous Claude session in this directory for resume
+    const resumeSession = agentId === 'claude' && workingDir
+      ? state.claudeSessionsByDir[workingDir] ?? null
+      : null;
+
     const info: TerminalInfo = await invoke('create_agent_terminal', {
       agentId,
       workingDir: workingDir ?? null,
+      sessionName: agentId === 'claude' ? sessionName : null,
+      resumeSession,
     });
     set(s => ({ terminals: { ...s.terminals, [info.id]: info } }));
 
@@ -164,6 +180,7 @@ export const useStore = create<AppStore>((set, get) => ({
   showContext: false,
   showFileTree: false,
   showGitDiff: false,
+  claudeSessionsByDir: {},
 
   loadWorkspaces: async () => {
     const workspaces: Workspace[] = await invoke('list_workspaces');
@@ -440,6 +457,25 @@ export const useStore = create<AppStore>((set, get) => ({
     }));
   },
 
+  setClaudeSessionId: (terminalId, sessionId) => {
+    set(s => {
+      const term = s.terminals[terminalId];
+      if (!term) return s;
+      const updated: Record<string, string> = { ...s.claudeSessionsByDir };
+      // Store session ID indexed by working directory for future resume
+      if (term.working_dir) {
+        updated[term.working_dir] = sessionId;
+      }
+      return {
+        terminals: {
+          ...s.terminals,
+          [terminalId]: { ...term, claude_session_id: sessionId },
+        },
+        claudeSessionsByDir: updated,
+      };
+    });
+  },
+
   loadContext: async (workspaceId) => {
     const entries: ContextEntry[] = await invoke('list_context', {
       workspaceId: workspaceId ?? null,
@@ -448,15 +484,9 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   openBrowser: async (bounds, url) => {
-    const tabId: string = await invoke('open_browser', { bounds, url: url ?? null });
+    await invoke('open_browser', { bounds, url: url ?? null });
     const urlStr = url ?? 'about:blank';
-    set(s => ({
-      showBrowser: true,
-      browserUrl: urlStr,
-      browserTabs: [...s.browserTabs, { id: tabId, url: urlStr }],
-      activeBrowserTabId: tabId,
-    }));
-    return tabId;
+    set({ showBrowser: true, browserUrl: urlStr });
   },
 
   openBrowserTab: async (bounds, url) => {

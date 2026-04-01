@@ -1,11 +1,15 @@
 .kb-help-overlay {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 380px;
   z-index: 9000;
   background: rgba(0, 0, 0, 0.5);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding-top: 60px;
 }
 
 .kb-help-panel {

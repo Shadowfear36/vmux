@@ -40,6 +40,10 @@ pub struct TerminalInfo {
     pub pid: Option<u32>,
     pub is_agent: bool,
     pub agent_id: Option<String>,
+    pub claude_session_id: Option<String>,
+    /// Path to the notify side-channel file (for Claude hook events)
+    #[serde(skip)]
+    pub notify_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +109,8 @@ impl TerminalPane {
             pid: pty.pid,
             is_agent: false,
             agent_id: None,
+            claude_session_id: None,
+            notify_file: None,
         };
 
         let pane = TerminalPane {
@@ -122,14 +128,52 @@ impl TerminalPane {
 
     // ── Phase 1b: agent PTY creation ────────────────────────────────────────
 
-    pub fn spawn_agent(working_dir: Option<String>, agent: &AgentProfile) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
+    pub fn spawn_agent(
+        working_dir: Option<String>,
+        agent: &AgentProfile,
+        session_name: Option<String>,
+        resume_session: Option<String>,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
         let id = Uuid::new_v4().to_string();
         let effective_dir = working_dir.or_else(|| {
             std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()
         });
+
+        // Build args and env, with Claude-specific enhancements
+        let mut args = agent.args.clone();
+        let mut env = agent.env.clone();
+        let mut notify_file: Option<String> = None;
+
+        if agent.id == "claude" {
+            // Set VMUX=1 so hooks/scripts know they're inside vmux
+            env.push(("VMUX".into(), "1".into()));
+
+            // Create notify side-channel file for hook events
+            let notify_dir = std::env::temp_dir().join("vmux");
+            let _ = std::fs::create_dir_all(&notify_dir);
+            let notify_path = notify_dir.join(format!("{}.notify", &id));
+            // Create empty file
+            let _ = std::fs::File::create(&notify_path);
+            let path_str = notify_path.to_string_lossy().to_string();
+            env.push(("VMUX_NOTIFY_FILE".into(), path_str.clone()));
+            notify_file = Some(path_str);
+
+            // Tag session with workspace/tab name
+            if let Some(name) = &session_name {
+                args.push("--name".into());
+                args.push(name.clone());
+            }
+
+            // Resume a previous session
+            if let Some(sid) = &resume_session {
+                args.push("--resume".into());
+                args.push(sid.clone());
+            }
+        }
+
         let (pty, pty_rx) = PtySession::spawn_command(
             80, 24, effective_dir.as_deref(),
-            &agent.command, &agent.args, &agent.env,
+            &agent.command, &args, &env,
         )?;
         let (grid, events_rx) = TermGrid::new(80, 24, pty.writer_handle());
 
@@ -144,6 +188,8 @@ impl TerminalPane {
             pid: pty.pid,
             is_agent: true,
             agent_id: Some(agent.id.clone()),
+            claude_session_id: None,
+            notify_file,
         };
 
         let pane = TerminalPane {
@@ -465,8 +511,14 @@ impl TerminalManager {
     }
 
     /// Phase 1: spawn agent CLI in a PTY, return ID immediately.
-    pub fn spawn_agent(&mut self, working_dir: Option<String>, agent: &AgentProfile) -> Result<TerminalInfo> {
-        let (pane, pty_rx) = TerminalPane::spawn_agent(working_dir, agent)?;
+    pub fn spawn_agent(
+        &mut self,
+        working_dir: Option<String>,
+        agent: &AgentProfile,
+        session_name: Option<String>,
+        resume_session: Option<String>,
+    ) -> Result<TerminalInfo> {
+        let (pane, pty_rx) = TerminalPane::spawn_agent(working_dir, agent, session_name, resume_session)?;
         let info = pane.info.clone();
         let id = info.id.clone();
         self.panes.insert(id.clone(), pane);

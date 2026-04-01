@@ -48,7 +48,10 @@
       "Read(//c/Users/Dylan/Code/vmux/$APPDATA/**)",
       "Bash(cargo doc:*)",
       "Bash(echo \"EXIT CODE: $?\")",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git add:*)"
     ]
   }
 }

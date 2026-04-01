@@ -77,6 +77,48 @@ export interface BrowserTabInfo {
   url: string;
 }
 
+// ─── Context Manager types ───────────────────────────────────────────────────
+
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface Conversation {
+  id: string;
+  project_id: string;
+  agent_type: string;
+  session_id: string | null;
+  title: string | null;
+  started_at: number;
+  ended_at: number | null;
+  source: string;
+  metadata: string;
+}
+
+export interface ConversationChunk {
+  id: string;
+  conversation_id: string;
+  chunk_index: number;
+  role: string;
+  content: string;
+  has_embedding: boolean;
+  created_at: number;
+}
+
+export interface AgentConfig {
+  id: string;
+  project_id: string;
+  name: string;
+  content: string;
+  auto_generated: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface GitMeta {
   branch: string | null;
   is_dirty: boolean;

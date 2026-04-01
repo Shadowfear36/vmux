@@ -8,6 +8,9 @@ mod commands;
 mod theme;
 mod browser;
 mod claude_hooks;
+mod transcript;
+mod embeddings;
+mod rag;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -94,6 +97,17 @@ pub fn run() {
             commands::browser_open_devtools,
             commands::list_directory,
             commands::install_claude_hooks,
+            commands::list_projects,
+            commands::ensure_project,
+            commands::list_conversations,
+            commands::get_conversation_chunks,
+            commands::import_transcripts,
+            commands::get_agent_config,
+            commands::save_agent_config,
+            commands::export_agent_config,
+            commands::rag_search,
+            commands::embed_chunks,
+            commands::set_embedding_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vmux");

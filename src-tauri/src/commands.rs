@@ -165,11 +165,64 @@ pub fn close_terminal(
     state: State<'_, Mutex<AppState>>,
     terminal_id: String,
 ) -> Result<(), String> {
-    // Stop notify watcher if this was a Claude terminal
     crate::claude_hooks::stop_notify_watcher(&terminal_id);
-    state.lock().map_err(|e| e.to_string())?
-        .terminals.close(&terminal_id);
+
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+
+    // Flush captured agent output to context store before closing
+    if let Some(pane) = s.terminals.panes.get(&terminal_id) {
+        if pane.info.is_agent {
+            if let Some(ref buf) = pane.capture_buf {
+                if let Ok(captured) = buf.lock() {
+                    if !captured.is_empty() {
+                        let agent_type = pane.info.agent_id.clone().unwrap_or_else(|| "unknown".into());
+                        let cwd = pane.info.working_dir.clone().unwrap_or_default();
+                        let title = format!("{} session", pane.info.shell_name);
+
+                        // Register project + create conversation + store as single chunk
+                        let proj_name = cwd.split(['/', '\\']).filter(|s| !s.is_empty()).last()
+                            .unwrap_or("unknown").to_string();
+                        if let Ok(project) = s.context.ensure_project(&cwd, &proj_name) {
+                            if let Ok(conv) = s.context.create_conversation(
+                                &project.id, &agent_type, None, Some(&title), "terminal_capture",
+                            ) {
+                                // Simple chunking: split on blank lines, max ~4KB per chunk
+                                let chunks = chunk_terminal_output(&captured, 4000);
+                                for (i, chunk) in chunks.iter().enumerate() {
+                                    let _ = s.context.add_chunk(&conv.id, i as i32, "mixed", chunk);
+                                }
+                                let _ = s.context.end_conversation(&conv.id);
+                                eprintln!("[vmux] captured {} chunks from {} agent session", chunks.len(), agent_type);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    s.terminals.close(&terminal_id);
     Ok(())
+}
+
+/// Split terminal output into chunks of approximately `max_size` bytes,
+/// splitting on blank lines or newlines.
+fn chunk_terminal_output(text: &str, max_size: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+
+    for line in text.lines() {
+        if current.len() + line.len() > max_size && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() { current.push('\n'); }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    // Filter out chunks that are just whitespace/escape sequences
+    chunks.into_iter().filter(|c| c.trim().len() > 10).collect()
 }
 
 #[tauri::command]
@@ -732,4 +785,174 @@ pub fn list_directory(path: String) -> Result<Vec<FileEntry>, String> {
         a.name.to_lowercase().cmp(&b.name.to_lowercase())
     });
     Ok(entries)
+}
+
+// ─── Project & Conversation commands ─────────────────────────────────────────
+
+use crate::context_store::{Project, Conversation, ConversationChunk, AgentConfig, SearchResult};
+
+#[tauri::command]
+pub fn list_projects(state: State<'_, Mutex<AppState>>) -> Result<Vec<Project>, String> {
+    state.lock().map_err(|e| e.to_string())?
+        .context.list_projects().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn ensure_project(
+    state: State<'_, Mutex<AppState>>,
+    path: String,
+    name: String,
+) -> Result<Project, String> {
+    state.lock().map_err(|e| e.to_string())?
+        .context.ensure_project(&path, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_conversations(
+    state: State<'_, Mutex<AppState>>,
+    project_id: Option<String>,
+) -> Result<Vec<Conversation>, String> {
+    state.lock().map_err(|e| e.to_string())?
+        .context.list_conversations(project_id.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_conversation_chunks(
+    state: State<'_, Mutex<AppState>>,
+    conversation_id: String,
+) -> Result<Vec<ConversationChunk>, String> {
+    state.lock().map_err(|e| e.to_string())?
+        .context.get_chunks(&conversation_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn import_transcripts(
+    state: State<'_, Mutex<AppState>>,
+    project_path: Option<String>,
+) -> Result<usize, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    if let Some(path) = project_path {
+        crate::transcript::import_all_transcripts_for_project(&s.context, &path)
+            .map_err(|e| e.to_string())
+    } else {
+        crate::transcript::import_all_transcripts(&s.context)
+            .map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub fn get_agent_config(
+    state: State<'_, Mutex<AppState>>,
+    project_id: String,
+) -> Result<Option<AgentConfig>, String> {
+    state.lock().map_err(|e| e.to_string())?
+        .context.get_agent_config(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_agent_config(
+    state: State<'_, Mutex<AppState>>,
+    project_id: String,
+    name: String,
+    content: String,
+    auto_generated: bool,
+) -> Result<AgentConfig, String> {
+    state.lock().map_err(|e| e.to_string())?
+        .context.save_agent_config(&project_id, &name, &content, auto_generated)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn export_agent_config(
+    state: State<'_, Mutex<AppState>>,
+    project_id: String,
+    output_path: String,
+) -> Result<(), String> {
+    state.lock().map_err(|e| e.to_string())?
+        .context.export_agent_config(&project_id, &output_path)
+        .map_err(|e| e.to_string())
+}
+
+// ─── RAG Search commands ─────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn rag_search(
+    state: State<'_, Mutex<AppState>>,
+    query: String,
+    project_id: Option<String>,
+    top_k: Option<usize>,
+) -> Result<Vec<SearchResult>, String> {
+    let (db_path, config) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        (s.context_db_path.clone(), s.embedding_config.clone())
+    };
+    let top_k = top_k.unwrap_or(10);
+
+    // Step 1: embed the query (async, no DB)
+    let provider = crate::embeddings::create_provider(&config);
+    let query_embeddings = provider.embed(&[query.clone()])
+        .await.map_err(|e| e.to_string())?;
+    let query_vec = query_embeddings.into_iter().next()
+        .ok_or("empty embedding result")?;
+
+    // Step 2: search DB (sync, on blocking thread)
+    tokio::task::spawn_blocking(move || {
+        let store = crate::context_store::ContextStore::new(&db_path)
+            .map_err(|e| e.to_string())?;
+        crate::rag::search_with_embedding(&store, &query_vec, project_id.as_deref(), top_k)
+            .map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn embed_chunks(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<usize, String> {
+    let (db_path, config) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        (s.context_db_path.clone(), s.embedding_config.clone())
+    };
+
+    // Get unembedded chunks (blocking)
+    let chunks = tokio::task::spawn_blocking({
+        let db_path = db_path.clone();
+        move || {
+            let store = crate::context_store::ContextStore::new(&db_path)
+                .map_err(|e| e.to_string())?;
+            store.get_unembedded_chunks(1000).map_err(|e| e.to_string())
+        }
+    }).await.map_err(|e| e.to_string())??;
+
+    if chunks.is_empty() { return Ok(0); }
+
+    // Embed (async API call)
+    let provider = crate::embeddings::create_provider(&config);
+    let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
+    let embeddings = provider.embed(&texts).await.map_err(|e| e.to_string())?;
+
+    // Store embeddings (blocking)
+    let count = chunks.len();
+    tokio::task::spawn_blocking(move || {
+        let store = crate::context_store::ContextStore::new(&db_path)
+            .map_err(|e| e.to_string())?;
+        for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
+            store.set_chunk_embedding(&chunk.id, embedding).map_err(|e| e.to_string())?;
+        }
+        Ok::<usize, String>(count)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn set_embedding_config(
+    state: State<'_, Mutex<AppState>>,
+    provider: String,
+    api_key: String,
+    base_url: Option<String>,
+    model: Option<String>,
+) -> Result<(), String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    s.embedding_config = crate::embeddings::EmbeddingConfig {
+        provider, api_key, base_url, model,
+    };
+    Ok(())
 }

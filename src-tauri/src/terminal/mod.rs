@@ -83,6 +83,8 @@ pub struct TerminalPane {
     /// Last PTY column/row size — used to skip no-op resizes.
     last_cols: u16,
     last_rows: u16,
+    /// Captured terminal output for agent sessions (shared with PTY output task).
+    pub capture_buf: Option<Arc<std::sync::Mutex<String>>>,
 }
 
 impl TerminalPane {
@@ -122,6 +124,7 @@ impl TerminalPane {
             events_rx: Some(events_rx),
             last_cols: 80,
             last_rows: 24,
+            capture_buf: None, // shells don't capture
         };
         Ok((pane, pty_rx))
     }
@@ -192,6 +195,9 @@ impl TerminalPane {
             notify_file,
         };
 
+        // Agent terminals capture output for context store
+        let capture_buf = Some(Arc::new(std::sync::Mutex::new(String::new())));
+
         let pane = TerminalPane {
             info,
             pty,
@@ -201,6 +207,7 @@ impl TerminalPane {
             events_rx: Some(events_rx),
             last_cols: 80,
             last_rows: 24,
+            capture_buf,
         };
         Ok((pane, pty_rx))
     }
@@ -255,12 +262,23 @@ impl TerminalPane {
         let grid_pty = self.grid.clone();
         let notif_tx = notification_tx;
         let app_osc = app.clone();
+        let capture = self.capture_buf.clone();
         tokio::spawn(async move {
             use crate::osc::OscAction;
             let mut osc = OscParser::new();
             let mut rx  = pty_rx;
             while let Some(bytes) = rx.recv().await {
                 let text = String::from_utf8_lossy(&bytes);
+
+                // Capture output for agent terminals (for context store)
+                if let Some(ref buf) = capture {
+                    if let Ok(mut b) = buf.lock() {
+                        // Cap at 2MB to prevent unbounded growth
+                        if b.len() < 2_000_000 {
+                            b.push_str(&text);
+                        }
+                    }
+                }
 
                 // Parse all OSC actions (notifications + browser + cwd)
                 for action in osc.parse_actions(&text) {

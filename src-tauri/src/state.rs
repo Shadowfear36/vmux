@@ -5,6 +5,7 @@ use crate::workspace::WorkspaceManager;
 use crate::context_store::ContextStore;
 use crate::theme::Theme;
 use crate::browser::BrowserManager;
+use crate::embeddings::EmbeddingConfig;
 
 pub struct AppState {
     pub terminals: TerminalManager,
@@ -18,6 +19,10 @@ pub struct AppState {
     /// Detected AI agent CLIs — computed once at startup.
     pub agents: Vec<AgentProfile>,
     pub browser: BrowserManager,
+    /// Path to the SQLite database (for creating additional connections in async contexts).
+    pub context_db_path: String,
+    /// Embedding provider configuration.
+    pub embedding_config: EmbeddingConfig,
 }
 
 impl AppState {
@@ -32,6 +37,8 @@ impl AppState {
             shells: detect_shells(),
             agents: detect_agents(),
             browser: BrowserManager::new(),
+            context_db_path: db_path,
+            embedding_config: EmbeddingConfig::default(),
         })
     }
 }

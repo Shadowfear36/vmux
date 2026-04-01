@@ -1,6 +1,7 @@
 import React, { useEffect, useCallback, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Allotment } from 'allotment';
 import 'allotment/dist/style.css';
 import { useStore } from './store';
@@ -139,10 +140,12 @@ export default function App() {
   useEffect(() => {
     const interval = setInterval(() => {
       useStore.getState().saveWorkspaceState();
-    }, 10000); // Save every 10 seconds
-    const handleBeforeUnload = () => { useStore.getState().saveWorkspaceState(); };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => { clearInterval(interval); window.removeEventListener('beforeunload', handleBeforeUnload); };
+    }, 5000); // Save every 5 seconds
+    // Tauri window close event (beforeunload doesn't fire reliably in Tauri)
+    const unlistenClose = getCurrentWindow().onCloseRequested(() => {
+      useStore.getState().saveWorkspaceState();
+    });
+    return () => { clearInterval(interval); unlistenClose.then(f => f()); };
   }, []);
 
   // ── Event listeners ──────────────────────────────────────────────────────

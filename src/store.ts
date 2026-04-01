@@ -207,10 +207,22 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   restoreWorkspacePanes: async (workspaceId) => {
+    // Capture old terminal IDs per pane BEFORE restore (order matters)
+    const oldWs = get().workspaces.find(w => w.id === workspaceId);
+    const oldPaneTerminalIds: string[] = [];
+    if (oldWs) {
+      for (const tab of oldWs.tabs) {
+        for (const pane of tab.panes) {
+          if (pane.kind.type === 'terminal') {
+            oldPaneTerminalIds.push(pane.kind.terminal_id);
+          }
+        }
+      }
+    }
+
     const infos: TerminalInfo[] = await invoke('restore_workspace_terminals', { workspaceId });
     if (infos.length === 0) return;
 
-    // Add restored terminals to store
     const newTerminals: Record<string, TerminalInfo> = {};
     for (const info of infos) {
       newTerminals[info.id] = info;
@@ -219,9 +231,40 @@ export const useStore = create<AppStore>((set, get) => ({
 
     // Re-load workspaces to get updated pane terminal_ids
     const workspaces: Workspace[] = await invoke('list_workspaces');
+
+    // Build old→new terminal ID mapping (panes are in the same order)
+    const idMap: Record<string, string> = {};
+    let newIdx = 0;
+    const newWs = workspaces.find(w => w.id === workspaceId);
+    if (newWs) {
+      for (const tab of newWs.tabs) {
+        for (const pane of tab.panes) {
+          if (pane.kind.type === 'terminal' && newIdx < oldPaneTerminalIds.length) {
+            idMap[oldPaneTerminalIds[newIdx]] = pane.kind.terminal_id;
+            newIdx++;
+          }
+        }
+      }
+    }
+
+    // Remap saved split tree layouts with new terminal IDs
+    const splitTrees: Record<string, SplitNode> = {};
+    if (newWs) {
+      for (const tab of newWs.tabs) {
+        if (tab.layout) {
+          try {
+            const tree = JSON.parse(tab.layout) as SplitNode;
+            const remapped = remapTerminalIds(tree, idMap);
+            splitTrees[tab.id] = remapped;
+          } catch { /* invalid layout, will rebuild */ }
+        }
+      }
+    }
+
     set(s => ({
       workspaces,
       activeTabId: workspaces.find(w => w.id === s.activeWorkspaceId)?.active_tab_id ?? s.activeTabId,
+      splitTrees: { ...s.splitTrees, ...splitTrees },
     }));
   },
 
@@ -758,6 +801,11 @@ export const useStore = create<AppStore>((set, get) => ({
 
   setSplitTree: (tabId, tree) => {
     set(s => ({ splitTrees: { ...s.splitTrees, [tabId]: tree } }));
+    // Debounced save: layout changes (drag resize) shouldn't save on every frame
+    clearTimeout((globalThis as any).__vmuxSplitSaveTimer);
+    (globalThis as any).__vmuxSplitSaveTimer = setTimeout(() => {
+      get().saveWorkspaceState();
+    }, 1000);
   },
 
   saveWorkspaceState: async () => {
@@ -814,8 +862,24 @@ export const useStore = create<AppStore>((set, get) => ({
         : s.splitTrees;
       return { workspaces, splitTrees, focusedTerminalId: info.id };
     });
+    // Save immediately after split
+    get().saveWorkspaceState();
   },
 
   setSidebarWidth: (w) => set({ sidebarWidth: w }),
   toggleContext: () => set(s => ({ showContext: !s.showContext })),
 }));
+
+/** Recursively remap terminal IDs in a split tree using an old→new ID mapping. */
+function remapTerminalIds(node: SplitNode, idMap: Record<string, string>): SplitNode {
+  if (node.type === 'leaf') {
+    return { ...node, terminalId: idMap[node.terminalId] ?? node.terminalId };
+  }
+  return {
+    ...node,
+    children: [
+      remapTerminalIds(node.children[0], idMap),
+      remapTerminalIds(node.children[1], idMap),
+    ],
+  };
+}

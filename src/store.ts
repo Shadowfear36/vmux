@@ -41,6 +41,8 @@ interface AppStore {
   splitTrees: Record<string, import('./components/SplitTree').SplitNode>;
   setSplitTree: (tabId: string, tree: import('./components/SplitTree').SplitNode) => void;
   splitFocusedPane: (direction: 'horizontal' | 'vertical') => Promise<void>;
+  splitFocusedPaneWith: (kind: 'shell' | 'agent', id: string, direction: 'horizontal' | 'vertical') => Promise<void>;
+  createWorktreeTab: (branch: string) => Promise<void>;
   saveWorkspaceState: () => Promise<void>;
 
   // Actions
@@ -207,10 +209,22 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   restoreWorkspacePanes: async (workspaceId) => {
+    // Capture old terminal IDs per pane BEFORE restore (order matters)
+    const oldWs = get().workspaces.find(w => w.id === workspaceId);
+    const oldPaneTerminalIds: string[] = [];
+    if (oldWs) {
+      for (const tab of oldWs.tabs) {
+        for (const pane of tab.panes) {
+          if (pane.kind.type === 'terminal') {
+            oldPaneTerminalIds.push(pane.kind.terminal_id);
+          }
+        }
+      }
+    }
+
     const infos: TerminalInfo[] = await invoke('restore_workspace_terminals', { workspaceId });
     if (infos.length === 0) return;
 
-    // Add restored terminals to store
     const newTerminals: Record<string, TerminalInfo> = {};
     for (const info of infos) {
       newTerminals[info.id] = info;
@@ -219,10 +233,55 @@ export const useStore = create<AppStore>((set, get) => ({
 
     // Re-load workspaces to get updated pane terminal_ids
     const workspaces: Workspace[] = await invoke('list_workspaces');
+
+    // Build old→new terminal ID mapping (panes are in the same order)
+    const idMap: Record<string, string> = {};
+    let newIdx = 0;
+    const newWs = workspaces.find(w => w.id === workspaceId);
+    if (newWs) {
+      for (const tab of newWs.tabs) {
+        for (const pane of tab.panes) {
+          if (pane.kind.type === 'terminal' && newIdx < oldPaneTerminalIds.length) {
+            idMap[oldPaneTerminalIds[newIdx]] = pane.kind.terminal_id;
+            newIdx++;
+          }
+        }
+      }
+    }
+
+    // Remap saved split tree layouts with new terminal IDs
+    const splitTrees: Record<string, SplitNode> = {};
+    if (newWs) {
+      for (const tab of newWs.tabs) {
+        if (tab.layout) {
+          try {
+            const tree = JSON.parse(tab.layout) as SplitNode;
+            const remapped = remapTerminalIds(tree, idMap);
+            splitTrees[tab.id] = remapped;
+          } catch { /* invalid layout, will rebuild */ }
+        }
+      }
+    }
+
     set(s => ({
       workspaces,
       activeTabId: workspaces.find(w => w.id === s.activeWorkspaceId)?.active_tab_id ?? s.activeTabId,
+      splitTrees: { ...s.splitTrees, ...splitTrees },
     }));
+
+    // Restore scrollback for each terminal (pane_id is stable across restores)
+    if (newWs) {
+      for (const tab of newWs.tabs) {
+        for (const pane of tab.panes) {
+          if (pane.kind.type === 'terminal') {
+            invoke('restore_terminal_scrollback', {
+              paneId: pane.id,
+              terminalId: pane.kind.terminal_id,
+            }).catch(() => {});
+          }
+        }
+      }
+    }
   },
 
   createWorkspace: async (name) => {
@@ -758,6 +817,11 @@ export const useStore = create<AppStore>((set, get) => ({
 
   setSplitTree: (tabId, tree) => {
     set(s => ({ splitTrees: { ...s.splitTrees, [tabId]: tree } }));
+    // Debounced save: layout changes (drag resize) shouldn't save on every frame
+    clearTimeout((globalThis as any).__vmuxSplitSaveTimer);
+    (globalThis as any).__vmuxSplitSaveTimer = setTimeout(() => {
+      get().saveWorkspaceState();
+    }, 1000);
   },
 
   saveWorkspaceState: async () => {
@@ -776,6 +840,18 @@ export const useStore = create<AppStore>((set, get) => ({
       workspaceId: ws.id,
       workspaceJson: JSON.stringify(wsWithLayouts),
     }).catch(() => {});
+
+    // Save terminal scrollback for each pane
+    for (const tab of ws.tabs) {
+      for (const pane of tab.panes) {
+        if (pane.kind.type === 'terminal') {
+          invoke('save_terminal_scrollback', {
+            paneId: pane.id,
+            terminalId: pane.kind.terminal_id,
+          }).catch(() => {});
+        }
+      }
+    }
   },
 
   splitFocusedPane: async (direction) => {
@@ -814,8 +890,93 @@ export const useStore = create<AppStore>((set, get) => ({
         : s.splitTrees;
       return { workspaces, splitTrees, focusedTerminalId: info.id };
     });
+    // Save immediately after split
+    get().saveWorkspaceState();
+  },
+
+  splitFocusedPaneWith: async (kind, id, direction) => {
+    const state = get();
+    const { focusedTerminalId, activeWorkspaceId, activeTabId } = state;
+    if (!activeWorkspaceId || !activeTabId) return;
+
+    const ws = state.workspaces.find(w => w.id === activeWorkspaceId);
+    const focusedDir = focusedTerminalId
+      ? state.terminals[focusedTerminalId]?.working_dir ?? ws?.directory ?? null
+      : ws?.directory ?? null;
+
+    let info: TerminalInfo;
+    if (kind === 'agent') {
+      info = await invoke('create_agent_terminal', {
+        agentId: id,
+        workingDir: focusedDir,
+        sessionName: `${ws?.name ?? 'vmux'}-${id}`,
+        resumeSession: null,
+        continueSession: id === 'claude',
+      });
+    } else {
+      info = await invoke('create_terminal', {
+        workingDir: focusedDir,
+        shellId: id,
+      });
+    }
+    set(s => ({ terminals: { ...s.terminals, [info.id]: info } }));
+
+    const pane = await invoke('add_pane', {
+      workspaceId: activeWorkspaceId,
+      tabId: activeTabId,
+      kind: { type: 'terminal', terminal_id: info.id, shell_id: kind === 'shell' ? id : null },
+    });
+
+    set(s => {
+      const workspaces = s.workspaces.map(w =>
+        w.id === activeWorkspaceId
+          ? { ...w, tabs: w.tabs.map(t => t.id === activeTabId ? { ...t, panes: [...t.panes, pane as any] } : t) }
+          : w
+      );
+      const tree = s.splitTrees[activeTabId];
+      const splitTrees = (tree && focusedTerminalId)
+        ? { ...s.splitTrees, [activeTabId]: splitNode(tree, focusedTerminalId, info.id, direction) }
+        : s.splitTrees;
+      return { workspaces, splitTrees, focusedTerminalId: info.id };
+    });
+    get().saveWorkspaceState();
+  },
+
+  createWorktreeTab: async (branch) => {
+    const state = get();
+    const ws = state.workspaces.find(w => w.id === state.activeWorkspaceId);
+    if (!ws || !state.activeWorkspaceId) return;
+
+    // Determine repo path from workspace directory or focused terminal CWD
+    const repoPath = ws.directory
+      ?? (state.focusedTerminalId ? state.terminals[state.focusedTerminalId]?.working_dir : null);
+    if (!repoPath) return;
+
+    try {
+      const worktreePath: string = await invoke('create_worktree', { repoPath, branch });
+      // Create a new tab with the worktree path as working directory
+      const tab = await get().addTab(state.activeWorkspaceId, `wt: ${branch}`);
+      // Create a terminal in the new tab at the worktree path
+      await get().createTerminalInTab(state.activeWorkspaceId, tab.id, worktreePath);
+    } catch (e) {
+      console.error('[vmux] create worktree failed:', e);
+    }
   },
 
   setSidebarWidth: (w) => set({ sidebarWidth: w }),
   toggleContext: () => set(s => ({ showContext: !s.showContext })),
 }));
+
+/** Recursively remap terminal IDs in a split tree using an old→new ID mapping. */
+function remapTerminalIds(node: SplitNode, idMap: Record<string, string>): SplitNode {
+  if (node.type === 'leaf') {
+    return { ...node, terminalId: idMap[node.terminalId] ?? node.terminalId };
+  }
+  return {
+    ...node,
+    children: [
+      remapTerminalIds(node.children[0], idMap),
+      remapTerminalIds(node.children[1], idMap),
+    ],
+  };
+}

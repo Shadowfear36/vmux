@@ -11,6 +11,7 @@ mod claude_hooks;
 mod transcript;
 mod embeddings;
 mod rag;
+mod worktree;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -101,6 +102,11 @@ pub fn run() {
             commands::open_browser_tab,
             commands::browser_history,
             commands::clear_browser_history,
+            commands::create_worktree,
+            commands::list_worktrees,
+            commands::delete_worktree,
+            commands::save_terminal_scrollback,
+            commands::restore_terminal_scrollback,
             commands::list_directory,
             commands::install_claude_hooks,
             commands::list_projects,

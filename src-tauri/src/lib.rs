@@ -101,6 +101,8 @@ pub fn run() {
             commands::open_browser_tab,
             commands::browser_history,
             commands::clear_browser_history,
+            commands::save_terminal_scrollback,
+            commands::restore_terminal_scrollback,
             commands::list_directory,
             commands::install_claude_hooks,
             commands::list_projects,

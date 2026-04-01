@@ -124,7 +124,7 @@ impl TerminalPane {
             events_rx: Some(events_rx),
             last_cols: 80,
             last_rows: 24,
-            capture_buf: None, // shells don't capture
+            capture_buf: Some(Arc::new(std::sync::Mutex::new(String::new()))),
         };
         Ok((pane, pty_rx))
     }
@@ -496,6 +496,11 @@ impl TerminalPane {
     pub fn set_notification(&mut self, message: Option<String>) {
         self.info.has_notification = message.is_some();
         self.info.notification_message = message;
+    }
+
+    /// Feed raw bytes into the VT grid (used to replay saved scrollback).
+    pub fn feed_grid(&self, data: &[u8]) {
+        self.grid.lock().process(data);
     }
 }
 

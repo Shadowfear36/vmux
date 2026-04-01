@@ -157,6 +157,12 @@ impl ContextStore {
                 visited_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_bh_visited ON browser_history(visited_at DESC);
+
+            CREATE TABLE IF NOT EXISTS terminal_scrollback (
+                pane_id TEXT PRIMARY KEY,
+                content BLOB NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
         ")?;
         Ok(ContextStore { db })
     }
@@ -499,6 +505,33 @@ impl ContextStore {
 
     pub fn clear_history(&self) -> Result<()> {
         self.db.execute("DELETE FROM browser_history", [])?;
+        Ok(())
+    }
+
+    // ── Terminal Scrollback ──────────────────────────────────────────────────
+
+    pub fn save_scrollback(&self, pane_id: &str, content: &[u8]) -> Result<()> {
+        let now = chrono_now();
+        self.db.execute(
+            "INSERT OR REPLACE INTO terminal_scrollback (pane_id, content, updated_at) VALUES (?1, ?2, ?3)",
+            params![pane_id, content, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_scrollback(&self, pane_id: &str) -> Result<Option<Vec<u8>>> {
+        let mut stmt = self.db.prepare(
+            "SELECT content FROM terminal_scrollback WHERE pane_id=?1"
+        )?;
+        let mut rows = stmt.query_map(params![pane_id], |row| {
+            let content: Vec<u8> = row.get(0)?;
+            Ok(content)
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    pub fn delete_scrollback(&self, pane_id: &str) -> Result<()> {
+        self.db.execute("DELETE FROM terminal_scrollback WHERE pane_id=?1", params![pane_id])?;
         Ok(())
     }
 }

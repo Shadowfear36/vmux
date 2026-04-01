@@ -842,6 +842,61 @@ pub fn get_theme(state: State<'_, Mutex<AppState>>) -> Result<Theme, String> {
     Ok(state.lock().map_err(|e| e.to_string())?.theme.clone())
 }
 
+// ─── Terminal scrollback persistence ─────────────────────────────────────────
+
+/// Save a terminal's capture buffer to SQLite, keyed by pane_id.
+#[tauri::command]
+pub fn save_terminal_scrollback(
+    state: State<'_, Mutex<AppState>>,
+    pane_id: String,
+    terminal_id: String,
+) -> Result<(), String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    if let Some(pane) = s.terminals.panes.get(&terminal_id) {
+        if let Some(ref buf) = pane.capture_buf {
+            if let Ok(captured) = buf.lock() {
+                // Keep last 128KB to avoid bloating the database
+                let bytes = if captured.len() > 128_000 {
+                    captured[captured.len() - 128_000..].as_bytes()
+                } else {
+                    captured.as_bytes()
+                };
+                s.context.save_scrollback(&pane_id, bytes)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Replay saved scrollback into a terminal's VT grid (called after restore).
+#[tauri::command]
+pub fn restore_terminal_scrollback(
+    state: State<'_, Mutex<AppState>>,
+    pane_id: String,
+    terminal_id: String,
+) -> Result<bool, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    let content = s.context.load_scrollback(&pane_id)
+        .map_err(|e| e.to_string())?;
+    if let Some(bytes) = content {
+        if let Some(pane) = s.terminals.panes.get(&terminal_id) {
+            // Feed saved output into the VT grid so it appears as scrollback
+            pane.feed_grid(&bytes);
+            // Also populate the capture buffer so future saves include this content
+            if let Some(ref buf) = pane.capture_buf {
+                if let Ok(mut b) = buf.lock() {
+                    if let Ok(text) = std::str::from_utf8(&bytes) {
+                        b.push_str(text);
+                    }
+                }
+            }
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 // ─── File tree ───────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]

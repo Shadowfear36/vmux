@@ -266,6 +266,20 @@ export const useStore = create<AppStore>((set, get) => ({
       activeTabId: workspaces.find(w => w.id === s.activeWorkspaceId)?.active_tab_id ?? s.activeTabId,
       splitTrees: { ...s.splitTrees, ...splitTrees },
     }));
+
+    // Restore scrollback for each terminal (pane_id is stable across restores)
+    if (newWs) {
+      for (const tab of newWs.tabs) {
+        for (const pane of tab.panes) {
+          if (pane.kind.type === 'terminal') {
+            invoke('restore_terminal_scrollback', {
+              paneId: pane.id,
+              terminalId: pane.kind.terminal_id,
+            }).catch(() => {});
+          }
+        }
+      }
+    }
   },
 
   createWorkspace: async (name) => {
@@ -824,6 +838,18 @@ export const useStore = create<AppStore>((set, get) => ({
       workspaceId: ws.id,
       workspaceJson: JSON.stringify(wsWithLayouts),
     }).catch(() => {});
+
+    // Save terminal scrollback for each pane
+    for (const tab of ws.tabs) {
+      for (const pane of tab.panes) {
+        if (pane.kind.type === 'terminal') {
+          invoke('save_terminal_scrollback', {
+            paneId: pane.id,
+            terminalId: pane.kind.terminal_id,
+          }).catch(() => {});
+        }
+      }
+    }
   },
 
   splitFocusedPane: async (direction) => {

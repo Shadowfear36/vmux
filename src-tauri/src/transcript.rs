@@ -26,29 +26,6 @@ fn claude_projects_dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".claude").join("projects"))
 }
 
-/// Find all Claude session directories and their JSONL files.
-pub fn discover_claude_sessions() -> Vec<(String, PathBuf)> {
-    let Some(projects_dir) = claude_projects_dir() else { return vec![] };
-    let mut sessions = Vec::new();
-
-    let Ok(entries) = fs::read_dir(&projects_dir) else { return vec![] };
-    for entry in entries.flatten() {
-        let project_dir = entry.path();
-        if !project_dir.is_dir() { continue; }
-
-        let Ok(files) = fs::read_dir(&project_dir) else { continue };
-        for file in files.flatten() {
-            let path = file.path();
-            if path.extension().map_or(true, |e| e != "jsonl") { continue; }
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                // stem is the session UUID
-                sessions.push((stem.to_string(), path));
-            }
-        }
-    }
-    sessions
-}
-
 /// Reverse the sanitized project dir name back to a real path.
 /// e.g. "C--Users-Dylan-Code-vmux" → "C:/Users/Dylan/Code/vmux"
 fn unsanitize_project_dir(dir_name: &str) -> String {
@@ -197,7 +174,7 @@ pub fn import_transcript(store: &ContextStore, jsonl_path: &Path) -> Result<usiz
     }
 
     let count = chunks.len();
-    eprintln!("[vmux] imported transcript {session_id}: {count} chunks, title={:?}", title);
+    log::info!("imported transcript {session_id}: {count} chunks, title={:?}", title);
     Ok(count)
 }
 
@@ -221,7 +198,7 @@ pub fn import_all_transcripts_for_project(store: &ContextStore, project_path: &s
         if path.extension().map_or(true, |e| e != "jsonl") { continue; }
         match import_transcript(store, &path) {
             Ok(n) => total += n,
-            Err(e) => eprintln!("[vmux] transcript import error: {e}"),
+            Err(e) => log::error!("transcript import error: {e}"),
         }
     }
     Ok(total)
@@ -245,7 +222,7 @@ pub fn import_all_transcripts(store: &ContextStore) -> Result<usize> {
             if path.extension().map_or(true, |e| e != "jsonl") { continue; }
             match import_transcript(store, &path) {
                 Ok(n) => total += n,
-                Err(e) => eprintln!("[vmux] transcript import error: {e}"),
+                Err(e) => log::error!("transcript import error: {e}"),
             }
         }
     }

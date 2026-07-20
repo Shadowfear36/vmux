@@ -277,14 +277,6 @@ impl ContextStore {
         Ok(rows)
     }
 
-    pub fn get_project_by_path(&self, path: &str) -> Result<Option<Project>> {
-        let mut stmt = self.db.prepare("SELECT id, name, path, created_at, updated_at FROM projects WHERE path=?1")?;
-        let mut rows = stmt.query_map(params![path], |row| {
-            Ok(Project { id: row.get(0)?, name: row.get(1)?, path: row.get(2)?, created_at: row.get(3)?, updated_at: row.get(4)? })
-        })?;
-        Ok(rows.next().transpose()?)
-    }
-
     // ── Conversations ────────────────────────────────────────────────────────
 
     pub fn create_conversation(&self, project_id: &str, agent_type: &str, session_id: Option<&str>,
@@ -530,10 +522,6 @@ impl ContextStore {
         Ok(rows.next().transpose()?)
     }
 
-    pub fn delete_scrollback(&self, pane_id: &str) -> Result<()> {
-        self.db.execute("DELETE FROM terminal_scrollback WHERE pane_id=?1", params![pane_id])?;
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -37,7 +37,6 @@ static PREFIX_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Data stored in GWLP_USERDATA for each terminal HWND.
 struct WndProcData {
     msg_tx: mpsc::UnboundedSender<WindowMessage>,
-    owner_hwnd: HWND,
     /// Channel for queuing keyboard input — never blocks WndProc, never drops keys.
     pty_input_tx: std::sync::mpsc::Sender<Vec<u8>>,
 }
@@ -157,7 +156,6 @@ unsafe fn create_window(
 
     let data = WndProcData {
         msg_tx,
-        owner_hwnd: HWND(parent_hwnd as *mut _),
         pty_input_tx: input_tx,
     };
     let data_ptr = Box::into_raw(Box::new(data)) as isize;

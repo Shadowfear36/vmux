@@ -69,12 +69,6 @@ impl BrowserManager {
         }
     }
 
-    pub fn update_title(&mut self, tab_id: &str, title: &str) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-            tab.title = title.to_string();
-        }
-    }
-
     pub fn list_tabs(&self) -> Vec<BrowserTabInfo> {
         self.tabs.iter().map(|t| BrowserTabInfo {
             id: t.id.clone(),

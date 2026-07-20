@@ -55,30 +55,9 @@ fn vmux_hook(event_tag: &str) -> Value {
     })
 }
 
-/// Install vmux hooks into ~/.claude/settings.json, preserving existing hooks.
-/// Returns Ok(true) if hooks were newly installed, Ok(false) if already present.
-pub fn ensure_vmux_hooks() -> Result<bool> {
-    if has_vmux_hooks() {
-        return Ok(false);
-    }
-
-    let path = claude_settings_path()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine Claude settings path"))?;
-
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    // Read existing settings or start with empty object
-    let mut settings: Value = if path.exists() {
-        let content = fs::read_to_string(&path)?;
-        serde_json::from_str(&content).unwrap_or_else(|_| json!({}))
-    } else {
-        json!({})
-    };
-
-    // Get or create the hooks object
+/// Merge vmux's hook entries into a Claude settings JSON value in place,
+/// preserving any existing `hooks` entries for the same event.
+fn merge_vmux_hooks_into(settings: &mut Value) -> Result<()> {
     let hooks = settings
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("settings is not an object"))?
@@ -106,11 +85,39 @@ pub fn ensure_vmux_hooks() -> Result<bool> {
         }
     }
 
+    Ok(())
+}
+
+/// Install vmux hooks into ~/.claude/settings.json, preserving existing hooks.
+/// Returns Ok(true) if hooks were newly installed, Ok(false) if already present.
+pub fn ensure_vmux_hooks() -> Result<bool> {
+    if has_vmux_hooks() {
+        return Ok(false);
+    }
+
+    let path = claude_settings_path()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine Claude settings path"))?;
+
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    // Read existing settings or start with empty object
+    let mut settings: Value = if path.exists() {
+        let content = fs::read_to_string(&path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+
+    merge_vmux_hooks_into(&mut settings)?;
+
     // Write back with pretty formatting
     let content = serde_json::to_string_pretty(&settings)?;
     fs::write(&path, content)?;
 
-    eprintln!("[vmux] Installed Claude hooks in {}", path.display());
+    log::info!("Installed Claude hooks in {}", path.display());
     Ok(true)
 }
 
@@ -133,7 +140,7 @@ pub fn start_notify_watcher(terminal_id: String, notify_path: String, app: AppHa
 
     let tid = terminal_id.clone();
     std::thread::spawn(move || {
-        eprintln!("[vmux] notify watcher started for {tid}: {notify_path}");
+        log::debug!("notify watcher started for {tid}: {notify_path}");
 
         // Wait briefly for the file to be created
         let path = Path::new(&notify_path);
@@ -145,7 +152,7 @@ pub fn start_notify_watcher(terminal_id: String, notify_path: String, app: AppHa
         let file = match fs::File::open(path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("[vmux] notify watcher: failed to open {notify_path}: {e}");
+                log::error!("notify watcher: failed to open {notify_path}: {e}");
                 return;
             }
         };
@@ -173,11 +180,11 @@ pub fn start_notify_watcher(terminal_id: String, notify_path: String, app: AppHa
                             "event": event,
                             "data": data,
                         }));
-                        eprintln!("[vmux] claude event: {event} for {tid}");
+                        log::debug!("claude event: {event} for {tid}");
                     }
                 }
                 Err(e) => {
-                    eprintln!("[vmux] notify watcher read error: {e}");
+                    log::error!("notify watcher read error: {e}");
                     std::thread::sleep(std::time::Duration::from_millis(1000));
                 }
             }
@@ -185,7 +192,7 @@ pub fn start_notify_watcher(terminal_id: String, notify_path: String, app: AppHa
 
         // Cleanup: remove the notify file
         let _ = fs::remove_file(path);
-        eprintln!("[vmux] notify watcher stopped for {tid}");
+        log::debug!("notify watcher stopped for {tid}");
     });
 }
 
@@ -195,5 +202,59 @@ pub fn stop_notify_watcher(terminal_id: &str) {
         if let Some(stop) = watchers.remove(terminal_id) {
             stop.store(true, Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_into_empty_settings_creates_hooks_for_all_events() {
+        let mut settings = json!({});
+        merge_vmux_hooks_into(&mut settings).unwrap();
+
+        let hooks = &settings["hooks"];
+        for event in ["Stop", "Notification", "SessionStart", "TaskCompleted"] {
+            let arr = hooks[event].as_array().expect("hook array");
+            assert_eq!(arr.len(), 1);
+            assert!(arr[0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .contains(VMUX_HOOK_MARKER));
+        }
+    }
+
+    #[test]
+    fn merge_preserves_existing_third_party_hooks() {
+        let mut settings = json!({
+            "hooks": {
+                "Stop": [
+                    { "matcher": "", "hooks": [{ "type": "command", "command": "echo existing" }] }
+                ]
+            },
+            "otherSetting": true,
+        });
+
+        merge_vmux_hooks_into(&mut settings).unwrap();
+
+        let stop_hooks = settings["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop_hooks.len(), 2, "existing Stop hook must be preserved, vmux's appended");
+        assert_eq!(stop_hooks[0]["hooks"][0]["command"], "echo existing");
+        assert!(stop_hooks[1]["hooks"][0]["command"].as_str().unwrap().contains(VMUX_HOOK_MARKER));
+
+        // Unrelated top-level settings must survive untouched.
+        assert_eq!(settings["otherSetting"], true);
+    }
+
+    #[test]
+    fn has_vmux_hooks_detects_marker_in_content() {
+        // has_vmux_hooks reads a real file path, but the marker-detection logic
+        // itself is a simple substring check — verify it directly here since
+        // ensure_vmux_hooks's output is what would be scanned.
+        let mut settings = json!({});
+        merge_vmux_hooks_into(&mut settings).unwrap();
+        let content = serde_json::to_string(&settings).unwrap();
+        assert!(content.contains(VMUX_HOOK_MARKER));
     }
 }

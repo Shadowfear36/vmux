@@ -50,14 +50,14 @@ impl PtySession {
 
         let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
         std::thread::spawn(move || {
-            eprintln!("[vmux] PTY reader thread started");
+            log::debug!("PTY reader thread started");
             let mut buf = [0u8; 8192];
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => { eprintln!("[vmux] PTY reader: EOF"); break; }
-                    Err(e) => { eprintln!("[vmux] PTY reader error: {e}"); break; }
+                    Ok(0) => { log::debug!("PTY reader: EOF"); break; }
+                    Err(e) => { log::error!("PTY reader error: {e}"); break; }
                     Ok(n) => {
-                        eprintln!("[vmux] PTY reader: {n} bytes read");
+                        log::trace!("PTY reader: {n} bytes read");
                         let _ = tx.send(buf[..n].to_vec());
                     }
                 }
@@ -102,12 +102,12 @@ impl PtySession {
 
         let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
         std::thread::spawn(move || {
-            eprintln!("[vmux] PTY reader thread started (command)");
+            log::debug!("PTY reader thread started (command)");
             let mut buf = [0u8; 8192];
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => { eprintln!("[vmux] PTY reader: EOF"); break; }
-                    Err(e) => { eprintln!("[vmux] PTY reader error: {e}"); break; }
+                    Ok(0) => { log::debug!("PTY reader: EOF"); break; }
+                    Err(e) => { log::error!("PTY reader error: {e}"); break; }
                     Ok(n) => { let _ = tx.send(buf[..n].to_vec()); }
                 }
             }

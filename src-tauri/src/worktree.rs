@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use serde::{Serialize, Deserialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorktreeInfo {
@@ -50,7 +50,7 @@ pub fn create_worktree(repo_path: &str, branch: &str) -> Result<String> {
         ))?;
     }
 
-    eprintln!("[vmux] created worktree: {wt_path_str} on branch {branch}");
+    log::info!("created worktree: {wt_path_str} on branch {branch}");
     Ok(wt_path_str)
 }
 
@@ -110,6 +110,6 @@ pub fn delete_worktree(repo_path: &str, branch: &str) -> Result<()> {
         std::fs::remove_dir_all(&wt_ref)?;
     }
 
-    eprintln!("[vmux] deleted worktree: {branch}");
+    log::info!("deleted worktree: {branch}");
     Ok(())
 }

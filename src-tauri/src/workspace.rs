@@ -202,7 +202,9 @@ impl WorkspaceManager {
     pub fn set_active(&mut self, workspace_id: &str) {
         if self.workspaces.contains_key(workspace_id) {
             self.active_workspace_id = Some(workspace_id.to_string());
-            let _ = self.save_meta("active_workspace_id", workspace_id);
+            if let Err(e) = self.save_meta("active_workspace_id", workspace_id) {
+                log::error!("failed to persist active workspace id: {e}");
+            }
         }
     }
 
@@ -303,5 +305,98 @@ impl WorkspaceManager {
             self.create_workspace("Default")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A unique SQLite file path under the OS temp dir, cleaned up on drop.
+    struct TempDb(std::path::PathBuf);
+
+    impl TempDb {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("vmux_test_{}.db", Uuid::new_v4()));
+            TempDb(path)
+        }
+        fn path(&self) -> &str {
+            self.0.to_str().unwrap()
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn new_manager_creates_default_workspace() {
+        let db = TempDb::new();
+        let mgr = WorkspaceManager::new(db.path()).unwrap();
+        assert_eq!(mgr.workspaces.len(), 1);
+        assert!(mgr.active_workspace_id.is_some());
+        assert_eq!(mgr.list()[0].name, "Default");
+    }
+
+    #[test]
+    fn workspace_tabs_and_panes_round_trip_across_reopen() {
+        let db = TempDb::new();
+
+        let ws_id = {
+            let mut mgr = WorkspaceManager::new(db.path()).unwrap();
+            let ws = mgr.create_workspace("Project").unwrap();
+            let tab = mgr.add_tab(&ws.id, "main").unwrap();
+            mgr.add_pane_to_tab(&ws.id, &tab.id, PaneKind::Terminal {
+                terminal_id: "term-1".to_string(),
+                shell_id: Some("cmd".to_string()),
+                working_dir: Some(r"C:\repo".to_string()),
+            }).unwrap();
+            mgr.set_workspace_directory(&ws.id, Some(r"C:\repo")).unwrap();
+            ws.id
+        };
+
+        // Reopen against the same file — simulates an app restart.
+        let mgr2 = WorkspaceManager::new(db.path()).unwrap();
+        let ws2 = mgr2.workspaces.get(&ws_id).expect("workspace persisted");
+        assert_eq!(ws2.name, "Project");
+        assert_eq!(ws2.directory.as_deref(), Some(r"C:\repo"));
+        assert_eq!(ws2.tabs.len(), 1);
+        assert_eq!(ws2.tabs[0].panes.len(), 1);
+        match &ws2.tabs[0].panes[0].kind {
+            PaneKind::Terminal { terminal_id, working_dir, .. } => {
+                assert_eq!(terminal_id, "term-1");
+                assert_eq!(working_dir.as_deref(), Some(r"C:\repo"));
+            }
+            other => panic!("expected Terminal pane, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn active_workspace_id_persists_across_reopen() {
+        let db = TempDb::new();
+
+        let second_id = {
+            let mut mgr = WorkspaceManager::new(db.path()).unwrap();
+            let second = mgr.create_workspace("Second").unwrap();
+            mgr.set_active(&second.id);
+            second.id
+        };
+
+        let mgr2 = WorkspaceManager::new(db.path()).unwrap();
+        assert_eq!(mgr2.active_workspace_id, Some(second_id));
+    }
+
+    #[test]
+    fn delete_workspace_recreates_default_when_last_one_removed() {
+        let db = TempDb::new();
+        let mut mgr = WorkspaceManager::new(db.path()).unwrap();
+        let only_id = mgr.list()[0].id.clone();
+
+        mgr.delete_workspace(&only_id).unwrap();
+
+        assert_eq!(mgr.workspaces.len(), 1);
+        assert_ne!(mgr.list()[0].id, only_id);
     }
 }

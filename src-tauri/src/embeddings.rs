@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 #[async_trait::async_trait]
 pub trait EmbeddingProvider: Send + Sync {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
-    fn dimension(&self) -> usize;
 }
 
 // ─── Voyage AI Provider ──────────────────────────────────────────────────────
@@ -62,8 +61,6 @@ impl EmbeddingProvider for VoyageProvider {
 
         Ok(resp.data.into_iter().map(|e| e.embedding).collect())
     }
-
-    fn dimension(&self) -> usize { 1024 }
 }
 
 // ─── OpenAI-compatible Provider (works with many APIs) ───────────────────────
@@ -115,8 +112,6 @@ impl EmbeddingProvider for OpenAICompatProvider {
 
         Ok(resp.data.into_iter().map(|e| e.embedding).collect())
     }
-
-    fn dimension(&self) -> usize { 1536 } // typical for text-embedding-3-small
 }
 
 // ─── Local BM25-style fallback (no API needed) ──────────────────────────────
@@ -165,8 +160,6 @@ impl EmbeddingProvider for LocalProvider {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         Ok(texts.iter().map(|t| Self::hash_embed(t, 256)).collect())
     }
-
-    fn dimension(&self) -> usize { 256 }
 }
 
 // ─── Cosine Similarity ──────────────────────────────────────────────────────

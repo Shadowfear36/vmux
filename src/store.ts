@@ -463,7 +463,7 @@ export const useStore = create<AppStore>((set, get) => ({
     const pane = await invoke('add_pane', {
       workspaceId,
       tabId,
-      kind: { type: 'terminal', terminal_id: info.id, shell_id: effectiveShellId },
+      kind: { type: 'terminal', terminal_id: info.id, shell_id: effectiveShellId, daemon_session_id: info.daemon_session_id },
     });
 
     // Update local workspace state so TabView re-renders with the new pane
@@ -929,7 +929,7 @@ export const useStore = create<AppStore>((set, get) => ({
     const pane = await invoke('add_pane', {
       workspaceId: activeWorkspaceId,
       tabId: activeTabId,
-      kind: { type: 'terminal', terminal_id: info.id, shell_id: shellId },
+      kind: { type: 'terminal', terminal_id: info.id, shell_id: shellId, daemon_session_id: info.daemon_session_id },
     });
 
     set(s => {
@@ -980,7 +980,7 @@ export const useStore = create<AppStore>((set, get) => ({
     const pane = await invoke('add_pane', {
       workspaceId: activeWorkspaceId,
       tabId: activeTabId,
-      kind: { type: 'terminal', terminal_id: info.id, shell_id: kind === 'shell' ? id : null },
+      kind: { type: 'terminal', terminal_id: info.id, shell_id: kind === 'shell' ? id : null, daemon_session_id: info.daemon_session_id },
     });
 
     set(s => {

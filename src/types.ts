@@ -18,6 +18,7 @@ export interface TerminalInfo {
   is_agent: boolean;
   agent_id: string | null;
   claude_session_id: string | null;
+  daemon_session_id: string | null;
 }
 
 export interface AgentProfile {
@@ -37,7 +38,7 @@ export interface PaneBounds {
 }
 
 export type PaneKind =
-  | { type: 'terminal'; terminal_id: string; shell_id?: string; working_dir?: string }
+  | { type: 'terminal'; terminal_id: string; shell_id?: string; working_dir?: string; daemon_session_id?: string | null }
   | { type: 'context' }
   | { type: 'browser'; url: string };
 

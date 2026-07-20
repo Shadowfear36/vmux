@@ -95,7 +95,7 @@ _Last verified against the codebase: 2026-07-20._
 - [x] Catppuccin Mocha theme (alongside Tokyo Night)
 - [x] Settings panel — theme, font size, default shell, and prefix key, all persisted (`app_settings` SQLite table) and live-applied to every open terminal without needing to reopen it. Font-picker-as-family-choice still not implemented (cosmic-text font discovery exists but only font *size* is user-configurable, not family)
 - [ ] `vmux` external CLI (named pipe control) — **not implemented**
-- [~] Session persistence — scrollback *text* is saved/replayed across restarts (works), but this is not true ConPTY process reattachment; closing vmux still ends the underlying shell/agent process
+- [~] Session persistence — plain-shell terminals *can* now genuinely survive a vmux restart via the experimental `vmuxd` daemon (see `docs/session-reattach-design.md`), gated behind `VMUX_DAEMON_TERMINALS` and off by default; agent terminals still only get scrollback-*text* replay (no process survival). Daemon lifecycle hardening (crash/orphan handling, version handshake) not done, so this isn't ready to be a default
 - [ ] Windows installer (MSI via Tauri bundler) — **not implemented**
 
 ---

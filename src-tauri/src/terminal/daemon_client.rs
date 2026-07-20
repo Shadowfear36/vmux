@@ -25,6 +25,11 @@ pub enum Request {
     Attach { session_id: String },
     Write(Vec<u8>),
     Resize { cols: u16, rows: u16 },
+    /// Terminate the session's process and remove it from the daemon's
+    /// registry. Without this, closing a daemon-backed pane in vmux would
+    /// leave its shell/agent process running forever as an unreachable
+    /// (but never cleaned up) daemon session.
+    Kill { session_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,10 +124,52 @@ impl DaemonPtySession {
         };
         log::info!("daemon session spawned: id={session_id} pid={pid:?}");
 
+        Ok(Self::finish_connection(session_id, pid, read_half, write_half))
+    }
+
+    /// Reattach to an existing daemon session by ID — e.g. after vmux
+    /// restarts and finds a persisted `daemon_session_id` on a saved pane.
+    /// Falling back is the caller's responsibility: if the daemon is
+    /// unreachable or the session no longer exists, this returns an error
+    /// and the caller should spawn a fresh session instead.
+    pub async fn attach(session_id: &str, cols: u16, rows: u16) -> Result<(Self, UnboundedReceiver<Vec<u8>>)> {
+        let client = connect_with_retry(5).await?;
+        let (read_half, mut write_half) = tokio::io::split(client);
+        let mut read_half = read_half;
+
+        send_request(&mut write_half, &Request::Attach { session_id: session_id.to_string() }).await?;
+        send_request(&mut write_half, &Request::Resize { cols, rows }).await?;
+
+        // Attach's first event is Replay directly (no Spawned handshake —
+        // there's nothing new to report beyond the session already existing).
+        let replay = match recv_event(&mut read_half).await? {
+            Some(Event::Replay(data)) => data,
+            Some(Event::Error(msg)) => return Err(anyhow!("daemon attach error: {msg}")),
+            other => return Err(anyhow!("unexpected daemon response to Attach: {other:?}")),
+        };
+        log::info!("daemon session attached: id={session_id}, {} bytes of replay", replay.len());
+
+        let (session, out_rx) = Self::finish_connection(session_id.to_string(), None, read_half, write_half);
+        // finish_connection's forwarding task will also deliver this same
+        // Replay once its loop starts — but we already consumed it above to
+        // check for Error, so re-inject it as the first thing the caller sees.
+        Ok((session, prepend_replay(replay, out_rx)))
+    }
+
+    /// Shared post-handshake plumbing for both `spawn` and `attach`: spawn
+    /// the two forwarding tasks (outgoing requests, incoming output) that
+    /// make a `DaemonPtySession` behave like `PtySession` to the rest of
+    /// the app.
+    fn finish_connection(
+        session_id: String,
+        pid: Option<u32>,
+        mut read_half: tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeClient>,
+        mut write_half: tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>,
+    ) -> (Self, UnboundedReceiver<Vec<u8>>) {
         let (out_tx, out_rx) = tmpsc::unbounded_channel::<Vec<u8>>();
         let (req_tx, mut req_rx) = tmpsc::unbounded_channel::<Request>();
 
-        // Forward outgoing requests (Write/Resize) to the daemon.
+        // Forward outgoing requests (Write/Resize/Kill) to the daemon.
         tokio::spawn(async move {
             while let Some(req) = req_rx.recv().await {
                 if send_request(&mut write_half, &req).await.is_err() { break; }
@@ -143,7 +190,7 @@ impl DaemonPtySession {
             }
         });
 
-        Ok((DaemonPtySession { session_id, pid, req_tx }, out_rx))
+        (DaemonPtySession { session_id, pid, req_tx }, out_rx)
     }
 
     pub fn write(&self, data: &[u8]) -> Result<()> {
@@ -159,6 +206,30 @@ impl DaemonPtySession {
         self.req_tx.send(Request::Resize { cols, rows })
             .map_err(|e| anyhow!("{e}"))
     }
+
+    /// Terminate this session on the daemon (kills the process, removes it
+    /// from the registry). Call this from `close_terminal` — without it,
+    /// closing a daemon-backed pane leaks the session forever.
+    pub fn kill(&self) -> Result<()> {
+        self.req_tx.send(Request::Kill { session_id: self.session_id.clone() })
+            .map_err(|e| anyhow!("{e}"))
+    }
+}
+
+/// Re-deliver an already-consumed Replay event as the first item on a fresh
+/// receiver, so `attach`'s caller sees it even though `attach` had to read
+/// it early (to check for an Error response) before the forwarding task
+/// that owns the receiver even started.
+fn prepend_replay(replay: Vec<u8>, mut rx: UnboundedReceiver<Vec<u8>>) -> UnboundedReceiver<Vec<u8>> {
+    if replay.is_empty() { return rx; }
+    let (tx, new_rx) = tmpsc::unbounded_channel::<Vec<u8>>();
+    let _ = tx.send(replay);
+    tokio::spawn(async move {
+        while let Some(data) = rx.recv().await {
+            if tx.send(data).is_err() { break; }
+        }
+    });
+    new_rx
 }
 
 async fn connect_with_retry(attempts: u32) -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {

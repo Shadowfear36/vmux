@@ -382,59 +382,96 @@ pub fn save_workspace_state(
 }
 
 /// Restore terminals for persisted panes after app restart.
-/// Spawns fresh PTYs for each saved terminal pane, updates pane terminal_ids.
+/// For panes with a saved `daemon_session_id`, tries to reattach to the
+/// still-running vmuxd session first (Phase 3 of the session-reattach
+/// design doc); falls back to spawning a fresh PTY if the daemon is
+/// unreachable or the session no longer exists. Local panes just spawn
+/// fresh, as before.
 #[tauri::command]
-pub fn restore_workspace_terminals(
+pub async fn restore_workspace_terminals(
     state: State<'_, Mutex<AppState>>,
     workspace_id: String,
 ) -> Result<Vec<TerminalInfo>, String> {
-    let mut s = state.lock().map_err(|e| e.to_string())?;
+    // (tab_id, pane_id, shell, cwd, daemon_session_id)
+    let to_restore: Vec<(String, String, ShellProfile, Option<String>, Option<String>)> = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let ws = s.workspaces.workspaces.get(&workspace_id)
+            .ok_or("workspace not found")?.clone();
+        let ws_dir = ws.directory.clone();
 
-    let ws = s.workspaces.workspaces.get(&workspace_id)
-        .ok_or("workspace not found")?.clone();
-
-    let mut infos = Vec::new();
-    // (tab_id, pane_id, new PaneKind)
-    let mut updates: Vec<(String, String, PaneKind)> = Vec::new();
-
-    // Use workspace directory as fallback for terminals without a saved CWD
-    let ws_dir = ws.directory.clone();
-
-    for tab in &ws.tabs {
-        for pane in &tab.panes {
-            if let PaneKind::Terminal { shell_id, working_dir, .. } = &pane.kind {
-                let shell = shell_id.as_deref()
-                    .and_then(|id| s.shells.iter().find(|sh| sh.id == id))
-                    .or_else(|| s.shells.first())
-                    .cloned();
-
-                if let Some(shell) = shell {
-                    // Priority: saved pane CWD > workspace directory > default
-                    let cwd = working_dir.as_deref()
-                        .or(ws_dir.as_deref());
-                    match s.terminals.spawn(cwd.map(|s| s.to_string()), &shell) {
-                        Ok(info) => {
-                            updates.push((tab.id.clone(), pane.id.clone(), PaneKind::Terminal {
-                                terminal_id: info.id.clone(),
-                                shell_id: Some(shell.id.clone()),
-                                working_dir: cwd.map(|s| s.to_string()),
-                            }));
-                            infos.push(info);
-                        }
-                        Err(e) => log::warn!("restore terminal failed: {e}"),
+        let mut entries = Vec::new();
+        for tab in &ws.tabs {
+            for pane in &tab.panes {
+                if let PaneKind::Terminal { shell_id, working_dir, daemon_session_id, .. } = &pane.kind {
+                    let shell = shell_id.as_deref()
+                        .and_then(|id| s.shells.iter().find(|sh| sh.id == id))
+                        .or_else(|| s.shells.first())
+                        .cloned();
+                    if let Some(shell) = shell {
+                        // Priority: saved pane CWD > workspace directory > default
+                        let cwd = working_dir.clone().or_else(|| ws_dir.clone());
+                        entries.push((tab.id.clone(), pane.id.clone(), shell, cwd, daemon_session_id.clone()));
                     }
                 }
             }
         }
+        entries
+    }; // ← AppState lock released before any (possibly daemon-connecting) spawn/attach
+
+    let mut infos = Vec::new();
+    // (tab_id, pane_id, new PaneKind, TerminalPane, receiver)
+    let mut spawned: Vec<(String, String, PaneKind, crate::terminal::TerminalPane, mpsc::UnboundedReceiver<Vec<u8>>)> = Vec::new();
+
+    for (tab_id, pane_id, shell, cwd, daemon_session_id) in to_restore {
+        let attached = if let Some(session_id) = &daemon_session_id {
+            match crate::terminal::TerminalPane::attach_daemon(session_id, cwd.clone(), &shell).await {
+                Ok(result) => Some(result),
+                Err(e) => {
+                    log::warn!("daemon session {session_id} unreachable, respawning: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // No saved session to attach to (or attach failed) — spawn fresh,
+        // same as before Phase 3. Restore intentionally never starts NEW
+        // daemon sessions; it only reattaches ones that already existed.
+        let (pane, rx, session_id_for_pane) = match attached {
+            Some((pane, rx)) => (pane, rx, daemon_session_id.clone()),
+            None => match crate::terminal::TerminalPane::spawn(cwd.clone(), &shell) {
+                Ok((pane, rx)) => (pane, rx, None),
+                Err(e) => { log::warn!("restore terminal failed: {e}"); continue; }
+            },
+        };
+
+        let kind = PaneKind::Terminal {
+            terminal_id: pane.info.id.clone(),
+            shell_id: Some(shell.id.clone()),
+            working_dir: cwd,
+            daemon_session_id: session_id_for_pane,
+        };
+        spawned.push((tab_id, pane_id, kind, pane, rx));
     }
 
-    // Apply updates in bulk, single DB write
-    if !updates.is_empty() {
+    if !spawned.is_empty() {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+
+        // Insert all panes first (borrows s.terminals), then mutate
+        // s.workspaces in a separate pass — doing both in one loop trips
+        // the borrow checker since both go through the same MutexGuard.
+        let mut kind_updates: Vec<(String, String, PaneKind)> = Vec::new();
+        for (tab_id, pane_id, kind, pane, rx) in spawned {
+            infos.push(s.terminals.insert(pane, rx));
+            kind_updates.push((tab_id, pane_id, kind));
+        }
+
         if let Some(ws) = s.workspaces.workspaces.get_mut(&workspace_id) {
-            for (tab_id, pane_id, kind) in updates {
+            for (tab_id, pane_id, kind) in kind_updates {
                 if let Some(tab) = ws.tabs.iter_mut().find(|t| t.id == tab_id) {
-                    if let Some(pane) = tab.panes.iter_mut().find(|p| p.id == pane_id) {
-                        pane.kind = kind;
+                    if let Some(p) = tab.panes.iter_mut().find(|p| p.id == pane_id) {
+                        p.kind = kind;
                     }
                 }
             }

@@ -22,6 +22,7 @@ const SCROLLBACK_CAP: usize = 256 * 1024;
 struct Session {
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
+    child: Mutex<Box<dyn portable_pty::Child + Send>>,
     scrollback: Arc<Mutex<Vec<u8>>>,
     tx: broadcast::Sender<Vec<u8>>,
     pid: Option<u32>,
@@ -78,6 +79,7 @@ fn spawn_session(shell_path: &str, args: &[String], cwd: Option<&str>, cols: u16
     Ok(Session {
         writer: Mutex::new(writer),
         master: Mutex::new(pair.master),
+        child: Mutex::new(child),
         scrollback,
         tx,
         pid,
@@ -105,15 +107,15 @@ async fn handle_client(pipe: NamedPipeServer, registry: Registry) -> anyhow::Res
     let (mut read_half, mut write_half) = tokio::io::split(pipe);
 
     // First message must be Spawn (new session) or Attach (existing one).
-    let session: Arc<Session> = match read_framed::<Request, _>(&mut read_half).await? {
+    let (session_id, session): (String, Arc<Session>) = match read_framed::<Request, _>(&mut read_half).await? {
         Some(Request::Spawn { shell_path, args, cwd, cols, rows }) => {
             match spawn_session(&shell_path, &args, cwd.as_deref(), cols, rows) {
                 Ok(s) => {
                     let session = Arc::new(s);
                     let session_id = uuid::Uuid::new_v4().to_string();
                     registry.lock().unwrap().insert(session_id.clone(), session.clone());
-                    write_framed(&mut write_half, &Event::Spawned { session_id, pid: session.pid }).await?;
-                    session
+                    write_framed(&mut write_half, &Event::Spawned { session_id: session_id.clone(), pid: session.pid }).await?;
+                    (session_id, session)
                 }
                 Err(e) => {
                     write_framed(&mut write_half, &Event::Error(e.to_string())).await?;
@@ -124,7 +126,7 @@ async fn handle_client(pipe: NamedPipeServer, registry: Registry) -> anyhow::Res
         Some(Request::Attach { session_id }) => {
             let found = registry.lock().unwrap().get(&session_id).cloned();
             match found {
-                Some(session) => session,
+                Some(session) => (session_id, session),
                 None => {
                     write_framed(&mut write_half, &Event::Error(format!("no such session: {session_id}"))).await?;
                     return Ok(());
@@ -164,6 +166,12 @@ async fn handle_client(pipe: NamedPipeServer, registry: Registry) -> anyhow::Res
                 let _ = session.master.lock().unwrap()
                     .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
             }
+            Ok(Some(Request::Kill { session_id })) => {
+                registry.lock().unwrap().remove(&session_id);
+                let _ = session.child.lock().unwrap().kill();
+                println!("[vmuxd] killed session {session_id}");
+                break;
+            }
             Ok(Some(_)) => {} // Spawn/Attach only valid as the first message
             Ok(None) => break,
             Err(e) => { println!("[vmuxd] recv error: {e}"); break; }
@@ -171,6 +179,7 @@ async fn handle_client(pipe: NamedPipeServer, registry: Registry) -> anyhow::Res
     }
 
     output_task.abort();
-    // Client disconnected — session (and its registry entry) live on.
+    let _ = session_id; // silence unused warning on the plain-disconnect path
+    // Client disconnected (without Kill) — session (and its registry entry) live on.
     Ok(())
 }

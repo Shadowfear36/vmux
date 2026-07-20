@@ -16,6 +16,12 @@ pub enum PaneKind {
         shell_id: Option<String>,
         #[serde(default)]
         working_dir: Option<String>,
+        /// Set when this pane's PTY is owned by the vmuxd daemon (Phase 3 of
+        /// docs/session-reattach-design.md) rather than an in-process
+        /// PtySession. Lets workspace restore attach to the still-running
+        /// session instead of spawning a fresh one.
+        #[serde(default)]
+        daemon_session_id: Option<String>,
     },
     Context,
     Browser { url: String },
@@ -381,6 +387,7 @@ mod tests {
                 terminal_id: "term-1".to_string(),
                 shell_id: Some("cmd".to_string()),
                 working_dir: Some(r"C:\repo".to_string()),
+                daemon_session_id: None,
             }).unwrap();
             mgr.set_workspace_directory(&ws.id, Some(r"C:\repo")).unwrap();
             ws.id

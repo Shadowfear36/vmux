@@ -54,6 +54,10 @@ pub struct TerminalInfo {
     /// Path to the notify side-channel file (for Claude hook events)
     #[serde(skip)]
     pub notify_file: Option<String>,
+    /// Set when this pane's PTY is owned by the vmuxd daemon (Phase 3 of
+    /// docs/session-reattach-design.md). None for local (PtySession) panes.
+    #[serde(default)]
+    pub daemon_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +94,18 @@ enum PtyBackend {
 }
 
 impl PtyBackend {
+    /// For daemon-backed panes, tell the daemon to kill the process and
+    /// drop the session from its registry — without this, closing a
+    /// daemon-backed pane would leak the session forever. Local sessions
+    /// need no equivalent: their process dies when PtySession is dropped.
+    fn kill_if_daemon(&self) {
+        if let PtyBackend::Daemon(p) = self {
+            if let Err(e) = p.kill() {
+                log::error!("failed to kill daemon session: {e}");
+            }
+        }
+    }
+
     fn write(&self, data: &[u8]) -> Result<()> {
         match self {
             PtyBackend::Local(p) => p.write(data),
@@ -152,6 +168,7 @@ impl TerminalPane {
             agent_id: None,
             claude_session_id: None,
             notify_file: None,
+            daemon_session_id: None,
         };
 
         let pane = TerminalPane {
@@ -209,6 +226,46 @@ impl TerminalPane {
             agent_id: None,
             claude_session_id: None,
             notify_file: None,
+            daemon_session_id: Some(pty.session_id.clone()),
+        };
+
+        let pane = TerminalPane {
+            info,
+            pty: PtyBackend::Daemon(pty),
+            grid: Arc::new(Mutex::new(grid)),
+            win: None,
+            renderer: None,
+            events_rx: Some(events_rx),
+            last_cols: 80,
+            last_rows: 24,
+            capture_buf: Some(Arc::new(std::sync::Mutex::new(String::new()))),
+        };
+        Ok((pane, pty_rx))
+    }
+
+    /// Reattach to a daemon session persisted from a previous vmux run
+    /// (Phase 3 of the session-reattach design doc). Returns an error if
+    /// the daemon is unreachable or the session no longer exists — the
+    /// caller (workspace restore) should fall back to `spawn` in that case.
+    pub async fn attach_daemon(session_id: &str, working_dir: Option<String>, shell: &ShellProfile) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
+        let id = Uuid::new_v4().to_string();
+        let (pty, pty_rx) = DaemonPtySession::attach(session_id, 80, 24).await?;
+        let (grid, events_rx) = TermGrid::new(80, 24, pty.writer_handle());
+
+        let info = TerminalInfo {
+            id,
+            title: shell.name.clone(),
+            shell_id: shell.id.clone(),
+            shell_name: shell.name.clone(),
+            working_dir,
+            has_notification: false,
+            notification_message: None,
+            pid: pty.pid,
+            is_agent: false,
+            agent_id: None,
+            claude_session_id: None,
+            notify_file: None,
+            daemon_session_id: Some(pty.session_id.clone()),
         };
 
         let pane = TerminalPane {
@@ -289,6 +346,7 @@ impl TerminalPane {
             agent_id: Some(agent.id.clone()),
             claude_session_id: None,
             notify_file,
+            daemon_session_id: None,
         };
 
         // Agent terminals capture output for context store
@@ -767,6 +825,9 @@ impl TerminalManager {
     }
 
     pub fn close(&mut self, id: &str) {
+        if let Some(pane) = self.panes.get(id) {
+            pane.pty.kill_if_daemon();
+        }
         self.panes.remove(id);
         self.pending_rx.remove(id);
     }

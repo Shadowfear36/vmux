@@ -407,9 +407,9 @@ impl TerminalPane {
                         let _ = app_click.emit("prefix:deactivated",
                             serde_json::json!({}));
                     }
-                    WindowMessage::PrefixCommand(ch) => {
+                    WindowMessage::PrefixCommand(key) => {
                         let _ = app_click.emit("prefix:command",
-                            serde_json::json!({ "key": ch.to_string() }));
+                            serde_json::json!({ "key": key }));
                     }
                     WindowMessage::Resize(_, _) => {
                         // Handled in set_bounds via ResizeObserver

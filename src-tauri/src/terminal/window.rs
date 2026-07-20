@@ -49,8 +49,9 @@ pub enum WindowMessage {
     Paste(String),
     Clicked,
     Close,
-    /// Prefix-mode command key (e.g. 'c' for new tab, 'n' for next tab).
-    PrefixCommand(char),
+    /// Prefix-mode command key (e.g. "c" for new tab, "n" for next tab,
+    /// "ArrowUp" for pane navigation — matches JS KeyboardEvent.key values).
+    PrefixCommand(String),
     /// Prefix mode was activated — frontend should show PREFIX badge.
     PrefixActivated,
     /// Prefix mode was deactivated.
@@ -253,9 +254,9 @@ unsafe extern "system" fn terminal_wnd_proc(
             if PREFIX_ACTIVE.load(Ordering::Relaxed) {
                 PREFIX_ACTIVE.store(false, Ordering::Relaxed);
                 send_msg(hwnd, WindowMessage::PrefixDeactivated);
-                // Map VK to character for the command
-                if let Some(ch) = vk_to_command_char(vk) {
-                    send_msg(hwnd, WindowMessage::PrefixCommand(ch));
+                // Map VK to a command key string for the frontend
+                if let Some(key) = vk_to_command_key(vk) {
+                    send_msg(hwnd, WindowMessage::PrefixCommand(key));
                 }
                 return LRESULT(0);
             }
@@ -414,28 +415,36 @@ unsafe fn write_pty(hwnd: HWND, data: &[u8]) {
     }
 }
 
-/// Map a virtual key code to a command character for the prefix system.
+/// Map a virtual key code to a command key string for the prefix system.
+/// Single characters match what the frontend's chord switch expects; arrow
+/// keys use JS KeyboardEvent.key names ("ArrowUp" etc.) so both the native
+/// WndProc path and the WebView keydown path produce identical payloads.
 /// Shift state is checked for keys that produce different chars when shifted.
-fn vk_to_command_char(vk: VIRTUAL_KEY) -> Option<char> {
+fn vk_to_command_key(vk: VIRTUAL_KEY) -> Option<String> {
     let shift = unsafe {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
         GetKeyState(0x10) < 0 // VK_SHIFT
     };
-    match vk.0 {
-        0x41..=0x5A => Some((vk.0 as u8 + 32) as char), // A-Z → a-z
-        0x30..=0x39 => Some((vk.0 as u8) as char),       // 0-9
-        0xBF => Some(if shift { '?' } else { '/' }),      // OEM_2: / and ?
-        0xBD => Some(if shift { '_' } else { '-' }),      // OEM_MINUS
-        0xBB => Some(if shift { '+' } else { '=' }),      // OEM_PLUS
-        0xDB => Some(if shift { '{' } else { '[' }),      // OEM_4
-        0xDD => Some(if shift { '}' } else { ']' }),      // OEM_6
-        0xDC => Some(if shift { '|' } else { '\\' }),     // OEM_5
-        0xBA => Some(if shift { ':' } else { ';' }),      // OEM_1
-        0xDE => Some(if shift { '"' } else { '\'' }),     // OEM_7
-        0xBC => Some(if shift { '<' } else { ',' }),      // OEM_COMMA
-        0xBE => Some(if shift { '>' } else { '.' }),      // OEM_PERIOD
-        _ => None,
-    }
+    let ch = match vk.0 {
+        0x41..=0x5A => (vk.0 as u8 + 32) as char, // A-Z → a-z
+        0x30..=0x39 => (vk.0 as u8) as char,       // 0-9
+        0xBF => if shift { '?' } else { '/' },      // OEM_2: / and ?
+        0xBD => if shift { '_' } else { '-' },      // OEM_MINUS
+        0xBB => if shift { '+' } else { '=' },      // OEM_PLUS
+        0xDB => if shift { '{' } else { '[' },      // OEM_4
+        0xDD => if shift { '}' } else { ']' },      // OEM_6
+        0xDC => if shift { '|' } else { '\\' },     // OEM_5
+        0xBA => if shift { ':' } else { ';' },      // OEM_1
+        0xDE => if shift { '"' } else { '\'' },     // OEM_7
+        0xBC => if shift { '<' } else { ',' },      // OEM_COMMA
+        0xBE => if shift { '>' } else { '.' },      // OEM_PERIOD
+        0x26 => return Some("ArrowUp".to_string()),
+        0x28 => return Some("ArrowDown".to_string()),
+        0x25 => return Some("ArrowLeft".to_string()),
+        0x27 => return Some("ArrowRight".to_string()),
+        _ => return None,
+    };
+    Some(ch.to_string())
 }
 
 /// Read UTF-16 text from the Win32 clipboard.

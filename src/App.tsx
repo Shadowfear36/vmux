@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Allotment } from 'allotment';
 import 'allotment/dist/style.css';
 import { useStore } from './store';
+import { findPaneInDirection } from './components/SplitTree';
 import { Sidebar } from './components/Sidebar';
 import { TabView } from './components/TabView';
 import { BrowserPane } from './components/BrowserPane';
@@ -23,6 +24,7 @@ import './App.css';
  *   t           → new tab
  *   n / p       → next / prev tab
  *   d           → close focused pane
+ *   arrows      → move focus to the adjacent pane in that direction
  *   x / b / f / g → toggle panels
  *   ?           → keyboard help
  *
@@ -131,6 +133,15 @@ function handlePrefixCommand(key: string, setShowHelp: (fn: (h: boolean) => bool
     case 'f': store.toggleFileTree(); break;
     case 'g': store.toggleGitDiff(); break;
     case 'd': if (store.focusedTerminalId) store.closeTerminal(store.focusedTerminalId); break;
+    case 'ArrowUp': case 'ArrowDown': case 'ArrowLeft': case 'ArrowRight': {
+      const tree = store.activeTabId ? store.splitTrees[store.activeTabId] : null;
+      if (tree && store.focusedTerminalId) {
+        const dir = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' }[key] as 'up' | 'down' | 'left' | 'right';
+        const nextId = findPaneInDirection(tree, store.focusedTerminalId, dir);
+        if (nextId) store.focusTerminal(nextId);
+      }
+      break;
+    }
   }
   return false;
 }

@@ -63,6 +63,75 @@ export function getTerminalIds(tree: SplitNode): string[] {
   return [...getTerminalIds(tree.children[0]), ...getTerminalIds(tree.children[1])];
 }
 
+// ─── Directional pane navigation ─────────────────────────────────────────────
+
+interface LeafRect { x: number; y: number; w: number; h: number; }
+
+/** Compute each leaf's normalized (0..1) rect within the tree, mirroring the
+ *  flex-basis layout SplitTreeView renders (horizontal = row, vertical = column). */
+function computeLeafRects(node: SplitNode, rect: LeafRect = { x: 0, y: 0, w: 1, h: 1 }): Record<string, LeafRect> {
+  if (node.type === 'leaf') {
+    return { [node.terminalId]: rect };
+  }
+  const { x, y, w, h } = rect;
+  if (node.direction === 'horizontal') {
+    const w0 = w * node.ratio;
+    return {
+      ...computeLeafRects(node.children[0], { x, y, w: w0, h }),
+      ...computeLeafRects(node.children[1], { x: x + w0, y, w: w - w0, h }),
+    };
+  }
+  const h0 = h * node.ratio;
+  return {
+    ...computeLeafRects(node.children[0], { x, y, w, h: h0 }),
+    ...computeLeafRects(node.children[1], { x, y: y + h0, w, h: h - h0 }),
+  };
+}
+
+/** Find the nearest leaf in a given direction from the focused terminal,
+ *  using pane-center geometry (tmux/i3-style: prefer close in the travel
+ *  axis, penalize being off-center on the perpendicular axis). */
+export function findPaneInDirection(
+  tree: SplitNode,
+  focusedTerminalId: string,
+  direction: 'up' | 'down' | 'left' | 'right',
+): string | null {
+  const rects = computeLeafRects(tree);
+  const focused = rects[focusedTerminalId];
+  if (!focused) return null;
+  const fcx = focused.x + focused.w / 2;
+  const fcy = focused.y + focused.h / 2;
+  const EPS = 1e-6;
+
+  let best: string | null = null;
+  let bestScore = Infinity;
+
+  for (const [id, r] of Object.entries(rects)) {
+    if (id === focusedTerminalId) continue;
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+
+    let inDirection = false;
+    let primary = 0;
+    let perpendicular = 0;
+    switch (direction) {
+      case 'left':  inDirection = cx < fcx - EPS; primary = fcx - cx; perpendicular = Math.abs(cy - fcy); break;
+      case 'right': inDirection = cx > fcx + EPS; primary = cx - fcx; perpendicular = Math.abs(cy - fcy); break;
+      case 'up':    inDirection = cy < fcy - EPS; primary = fcy - cy; perpendicular = Math.abs(cx - fcx); break;
+      case 'down':  inDirection = cy > fcy + EPS; primary = cy - fcy; perpendicular = Math.abs(cx - fcx); break;
+    }
+    if (!inDirection) continue;
+
+    const score = primary + perpendicular * 2;
+    if (score < bestScore) {
+      bestScore = score;
+      best = id;
+    }
+  }
+
+  return best;
+}
+
 // ─── Split Tree Renderer ─────────────────────────────────────────────────────
 
 interface SplitTreeViewProps {

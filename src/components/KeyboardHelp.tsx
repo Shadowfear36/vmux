@@ -8,6 +8,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { key: 'Ctrl-A c', desc: 'Split horizontal (default shell)' },
   { key: 'Ctrl-A -', desc: 'Split vertical (default shell)' },
   { key: 'Ctrl-A d', desc: 'Close focused pane' },
+  { key: 'Ctrl-A ↑↓←→', desc: 'Move focus to adjacent pane' },
 
   { section: 'Shell Picker (chord)' },
   { key: 'Ctrl-A s 1-9', desc: 'Open shell #N horizontal' },

@@ -229,6 +229,7 @@ impl TerminalPane {
         bounds: PaneBounds,
         notification_tx: mpsc::UnboundedSender<(TerminalId, String)>,
         theme: Theme,
+        font_size: f32,
         pty_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     ) -> Result<()> {
         // Create Win32 child window on the main thread, passing PTY writer
@@ -246,7 +247,7 @@ impl TerminalPane {
         let init_h = (bounds.height as u32).max(100);
 
         // Initialise wgpu renderer (async, ~200ms)
-        let renderer = GpuRenderer::new(hwnd, init_w, init_h, theme).await?;
+        let renderer = GpuRenderer::new(hwnd, init_w, init_h, theme, font_size).await?;
 
         // Use the renderer's actual font metrics for PTY/grid sizing.
         let cell_w = renderer.font.cell_width;
@@ -542,6 +543,43 @@ impl TerminalPane {
     pub fn feed_grid(&self, data: &[u8]) {
         self.grid.lock().process(data);
     }
+
+    /// Apply a new theme live — colors are read at render time, so this just
+    /// swaps the renderer's theme and re-renders the current grid snapshot.
+    pub fn set_theme(&mut self, theme: Theme) {
+        if let Some(r) = &self.renderer {
+            if let Ok(mut renderer) = r.try_lock() {
+                renderer.theme = theme;
+                let snap = self.grid.lock().snapshot();
+                let _ = renderer.render(&snap);
+            }
+        }
+    }
+
+    /// Apply a new font size live: rebuilds the renderer's font/atlas, then
+    /// re-derives cols/rows from the new cell metrics and resizes the
+    /// PTY/grid if they changed (mirrors the resize logic in `set_bounds`).
+    pub fn set_font_size(&mut self, font_size: f32) {
+        if let Some(r) = &self.renderer {
+            if let Ok(mut renderer) = r.try_lock() {
+                renderer.set_font_size(font_size);
+                let cell_w = renderer.font.cell_width;
+                let cell_h = renderer.font.cell_height;
+                let cols = ((renderer.width as f32 / cell_w).floor() as u16).max(2);
+                let rows = ((renderer.height as f32 / cell_h).floor() as u16).max(1);
+
+                if cols != self.last_cols || rows != self.last_rows {
+                    self.last_cols = cols;
+                    self.last_rows = rows;
+                    let _ = self.pty.resize(cols, rows);
+                    self.grid.lock().resize(cols, rows);
+                }
+
+                let snap = self.grid.lock().snapshot();
+                let _ = renderer.render(&snap);
+            }
+        }
+    }
 }
 
 // ─── TerminalManager ──────────────────────────────────────────────────────────
@@ -606,6 +644,20 @@ impl TerminalManager {
     pub fn set_bounds(&mut self, id: &str, bounds: &PaneBounds) {
         if let Some(pane) = self.panes.get_mut(id) {
             pane.set_bounds(bounds);
+        }
+    }
+
+    /// Apply a theme change to every currently open pane.
+    pub fn set_theme_all(&mut self, theme: &Theme) {
+        for pane in self.panes.values_mut() {
+            pane.set_theme(theme.clone());
+        }
+    }
+
+    /// Apply a font size change to every currently open pane.
+    pub fn set_font_size_all(&mut self, font_size: f32) {
+        for pane in self.panes.values_mut() {
+            pane.set_font_size(font_size);
         }
     }
 

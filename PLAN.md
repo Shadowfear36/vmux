@@ -93,8 +93,7 @@ _Last verified against the codebase: 2026-07-20._
 ## Phase 7 — Polish
 
 - [x] Catppuccin Mocha theme (alongside Tokyo Night)
-- [ ] Font picker (cosmic-text font discovery exists; no UI to choose)
-- [ ] Settings panel (font size, theme, shell path, keybindings) — **not implemented**
+- [x] Settings panel — theme, font size, default shell, and prefix key, all persisted (`app_settings` SQLite table) and live-applied to every open terminal without needing to reopen it. Font-picker-as-family-choice still not implemented (cosmic-text font discovery exists but only font *size* is user-configurable, not family)
 - [ ] `vmux` external CLI (named pipe control) — **not implemented**
 - [~] Session persistence — scrollback *text* is saved/replayed across restarts (works), but this is not true ConPTY process reattachment; closing vmux still ends the underlying shell/agent process
 - [ ] Windows installer (MSI via Tauri bundler) — **not implemented**
@@ -105,8 +104,7 @@ _Last verified against the codebase: 2026-07-20._
 
 Roughly in order of "most users will hit this constantly" vs. "one-time/polish":
 
-1. **Settings panel** — currently no in-app way to change font size/theme/shell without editing source.
-2. Lower priority / bigger lifts: true ConPTY session reattachment, `vmux` CLI, browser accessibility API, installer, word/line-select on top of the basic range selection.
+Everything in that tier is now done. Remaining items are the bigger lifts: true ConPTY session reattachment, `vmux` CLI, browser accessibility API, installer, word/line-select on top of the basic range selection, and remapping individual chord keys beyond the prefix key itself.
 
 ---
 

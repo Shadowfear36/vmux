@@ -6,6 +6,7 @@ use crate::context_store::ContextStore;
 use crate::theme::Theme;
 use crate::browser::BrowserManager;
 use crate::embeddings::EmbeddingConfig;
+use crate::settings::Settings;
 
 pub struct AppState {
     pub terminals: TerminalManager,
@@ -23,22 +24,27 @@ pub struct AppState {
     pub context_db_path: String,
     /// Embedding provider configuration.
     pub embedding_config: EmbeddingConfig,
+    /// User-configurable app settings (theme, font size, default shell, prefix key).
+    pub settings: Settings,
 }
 
 impl AppState {
     pub fn new(data_dir: &str, main_hwnd: isize) -> anyhow::Result<Self> {
         let db_path = format!("{}/vmux.db", data_dir);
+        let settings = crate::settings::load(&db_path).unwrap_or_default();
+        let theme = crate::settings::theme_from_name(&settings.theme_name);
         Ok(AppState {
             terminals: TerminalManager::new(),
             workspaces: WorkspaceManager::new(&db_path)?,
             context: ContextStore::new(&db_path)?,
-            theme: Theme::default(),
+            theme,
             main_hwnd,
             shells: detect_shells(),
             agents: detect_agents(),
             browser: BrowserManager::new(),
             context_db_path: db_path,
             embedding_config: EmbeddingConfig::default(),
+            settings,
         })
     }
 }

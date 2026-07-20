@@ -12,11 +12,13 @@ import { BrowserPane } from './components/BrowserPane';
 import { ContextPanel } from './components/ContextPanel';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { WorktreeList } from './components/WorktreeList';
+import { SettingsPanel } from './components/SettingsPanel';
 import { FileTree } from './components/FileTree';
 import './App.css';
 
 /**
- * vmux prefix key system: Ctrl-A (like tmux)
+ * vmux prefix key system: Ctrl-A by default (like tmux), remappable to any
+ * single letter via the Settings panel (settings.prefix_key).
  *
  * Single keys:
  *   c / | / %   → split horizontal (default shell)
@@ -37,8 +39,6 @@ import './App.css';
  *   w → l       → list worktrees
  *   w → +       → new workspace
  */
-const PREFIX_KEY = 'a';
-
 type ChordState = null | 'shell' | 'shell-vert' | 'agent' | 'agent-vert' | 'worktree';
 
 let chordState: ChordState = null;
@@ -151,6 +151,7 @@ export default function App() {
     workspaces, activeWorkspaceId, activeTabId,
     loadWorkspaces, loadShells, addTab, setActiveTab, renameTab,
     showBrowser, showContext, showFileTree, showGitDiff,
+    showSettings, toggleSettings,
   } = useStore();
 
   const [prefixActive, setPrefixActive] = useState(false);
@@ -166,6 +167,7 @@ export default function App() {
   // ── Load initial state ────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
+      await useStore.getState().loadSettings();
       await loadWorkspaces();
       await loadShells();
       useStore.getState().loadAgents();
@@ -277,7 +279,8 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (!jsPrefixPending && e.ctrlKey && e.key === 'a') {
+      const prefixKey = useStore.getState().settings?.prefix_key ?? 'a';
+      if (!jsPrefixPending && e.ctrlKey && e.key === prefixKey) {
         e.preventDefault(); jsPrefixPending = true; setPrefixActive(true); return;
       }
       if (jsPrefixPending) {
@@ -388,6 +391,7 @@ export default function App() {
       {prefixActive && createPortal(<div className="prefix-indicator">{chordLabel ? `PREFIX ${chordLabel}` : 'PREFIX'}</div>, document.body)}
       {showHelp && createPortal(<KeyboardHelp onClose={() => setShowHelp(false)} />, document.body)}
       {showWorktrees && createPortal(<WorktreeList onClose={() => setShowWorktrees(false)} />, document.body)}
+      {showSettings && createPortal(<SettingsPanel onClose={toggleSettings} />, document.body)}
     </div>
   );
 }

@@ -140,6 +140,13 @@ export interface WorktreeInfo {
   is_main: boolean;
 }
 
+export interface Settings {
+  theme_name: string;
+  default_shell_id: string | null;
+  font_size: number;
+  prefix_key: string;
+}
+
 export interface GitMeta {
   branch: string | null;
   is_dirty: boolean;

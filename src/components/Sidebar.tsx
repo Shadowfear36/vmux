@@ -19,6 +19,7 @@ export function Sidebar({ onShowHelp }: SidebarProps) {
     showFileTree, toggleFileTree,
     showBrowser, toggleBrowser,
     showGitDiff, toggleGitDiff,
+    toggleSettings,
   } = useStore();
 
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
@@ -134,13 +135,22 @@ export function Sidebar({ onShowHelp }: SidebarProps) {
             Git
           </button>
         </div>
-        <button
-          className="sidebar-footer-btn sidebar-help-btn"
-          onClick={onShowHelp}
-          title="Keyboard shortcuts (Ctrl-A ?)"
-        >
-          ? Shortcuts
-        </button>
+        <div className="sidebar-footer-row">
+          <button
+            className="sidebar-footer-btn sidebar-help-btn"
+            onClick={onShowHelp}
+            title="Keyboard shortcuts (Ctrl-A ?)"
+          >
+            ? Shortcuts
+          </button>
+          <button
+            className="sidebar-footer-btn"
+            onClick={toggleSettings}
+            title="Settings"
+          >
+            ⚙ Settings
+          </button>
+        </div>
       </div>
     </div>
   );

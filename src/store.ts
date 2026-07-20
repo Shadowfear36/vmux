@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { ask } from '@tauri-apps/plugin-dialog';
-import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry, BrowserTabInfo, WorktreeInfo } from './types';
+import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry, BrowserTabInfo, WorktreeInfo, Settings } from './types';
 import { removeNode, splitNode, type SplitNode } from './components/SplitTree';
 
 const CLAUDE_HOOKS_PROMPTED_KEY = 'vmux-claude-hooks-prompted';
@@ -144,6 +144,13 @@ interface AppStore {
 
   setSidebarWidth: (w: number) => void;
   toggleContext: () => void;
+
+  // Settings
+  settings: Settings | null;
+  showSettings: boolean;
+  toggleSettings: () => void;
+  loadSettings: () => Promise<void>;
+  updateSettings: (settings: Settings) => Promise<void>;
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -152,10 +159,17 @@ export const useStore = create<AppStore>((set, get) => ({
 
   loadShells: async () => {
     const shells: ShellProfile[] = await invoke('list_shells');
-    set(s => ({ shells, defaultShellId: s.defaultShellId ?? shells[0]?.id ?? null }));
+    set(s => ({
+      shells,
+      defaultShellId: s.defaultShellId ?? s.settings?.default_shell_id ?? shells[0]?.id ?? null,
+    }));
   },
 
-  setDefaultShell: (id) => set({ defaultShellId: id }),
+  setDefaultShell: (id) => {
+    set({ defaultShellId: id });
+    const settings = get().settings;
+    if (settings) get().updateSettings({ ...settings, default_shell_id: id });
+  },
 
   agents: [],
 
@@ -1027,6 +1041,20 @@ export const useStore = create<AppStore>((set, get) => ({
 
   setSidebarWidth: (w) => set({ sidebarWidth: w }),
   toggleContext: () => set(s => ({ showContext: !s.showContext })),
+
+  settings: null,
+  showSettings: false,
+  toggleSettings: () => set(s => ({ showSettings: !s.showSettings })),
+
+  loadSettings: async () => {
+    const settings: Settings = await invoke('get_settings');
+    set(s => ({ settings, defaultShellId: s.defaultShellId ?? settings.default_shell_id }));
+  },
+
+  updateSettings: async (settings) => {
+    await invoke('update_settings', { settings });
+    set({ settings });
+  },
 }));
 
 /** Recursively remap terminal IDs in a split tree using an old→new ID mapping. */

@@ -10,7 +10,6 @@ use crate::terminal::agents::AgentProfile;
 use crate::workspace::{Workspace, PaneKind, Tab, Pane};
 use crate::git_meta::{GitMeta, get_git_meta};
 use crate::context_store::ContextEntry;
-use crate::theme::Theme;
 
 // ─── Terminal pane commands ───────────────────────────────────────────────────
 
@@ -58,9 +57,9 @@ pub async fn set_terminal_bounds(
     terminal_id: String,
     bounds: PaneBounds,
 ) -> Result<(), String> {
-    let (needs_init, main_hwnd, theme) = {
+    let (needs_init, main_hwnd, theme, font_size) = {
         let s = state.lock().map_err(|e| e.to_string())?;
-        (s.terminals.panes_needing_init(&terminal_id), s.main_hwnd, s.theme.clone())
+        (s.terminals.panes_needing_init(&terminal_id), s.main_hwnd, s.theme.clone(), s.settings.font_size)
     };
 
     if needs_init {
@@ -95,7 +94,7 @@ pub async fn set_terminal_bounds(
 
         // Expensive: Win32 CreateWindowExW (~5ms) + wgpu adapter/device (~200ms).
         // AppState is fully unlocked during this time — other commands proceed normally.
-        pane.init_renderer(&app, main_hwnd, bounds, notif_tx, theme, pty_rx)
+        pane.init_renderer(&app, main_hwnd, bounds, notif_tx, theme, font_size, pty_rx)
             .await
             .map_err(|e| {
                 log::error!("init_renderer FAILED for {terminal_id}: {e}");
@@ -846,21 +845,41 @@ pub fn clear_browser_history(state: State<'_, Mutex<AppState>>) -> Result<(), St
         .context.clear_history().map_err(|e| e.to_string())
 }
 
-// ─── Theme ────────────────────────────────────────────────────────────────────
+// ─── Settings ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn set_theme(state: State<'_, Mutex<AppState>>, theme_name: String) -> Result<(), String> {
-    let theme = match theme_name.as_str() {
-        "catppuccin_mocha" => Theme::catppuccin_mocha(),
-        _ => Theme::tokyo_night(),
-    };
-    state.lock().map_err(|e| e.to_string())?.theme = theme;
-    Ok(())
+pub fn get_settings(state: State<'_, Mutex<AppState>>) -> Result<crate::settings::Settings, String> {
+    Ok(state.lock().map_err(|e| e.to_string())?.settings.clone())
 }
 
+/// Convert a single-letter prefix key setting (e.g. "g") to its uppercase
+/// virtual-key code. Falls back to VK_A if the setting isn't a plain letter.
+pub fn prefix_key_to_vk(key: &str) -> u16 {
+    key.chars().next()
+        .map(|c| c.to_ascii_uppercase() as u16)
+        .filter(|vk| (0x41..=0x5A).contains(vk))
+        .unwrap_or(0x41)
+}
+
+/// Persist new settings and apply theme/font-size changes live to every
+/// currently open terminal pane, and the prefix key to the native WndProc.
 #[tauri::command]
-pub fn get_theme(state: State<'_, Mutex<AppState>>) -> Result<Theme, String> {
-    Ok(state.lock().map_err(|e| e.to_string())?.theme.clone())
+pub fn update_settings(
+    state: State<'_, Mutex<AppState>>,
+    settings: crate::settings::Settings,
+) -> Result<(), String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+
+    crate::settings::save(&s.context_db_path, &settings).map_err(|e| e.to_string())?;
+
+    let theme = crate::settings::theme_from_name(&settings.theme_name);
+    s.terminals.set_theme_all(&theme);
+    s.terminals.set_font_size_all(settings.font_size);
+    crate::terminal::window::set_prefix_vk(prefix_key_to_vk(&settings.prefix_key));
+
+    s.theme = theme;
+    s.settings = settings;
+    Ok(())
 }
 
 // ─── Terminal scrollback persistence ─────────────────────────────────────────

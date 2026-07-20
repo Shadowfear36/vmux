@@ -96,7 +96,7 @@ static GPU_INIT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(())
 impl GpuRenderer {
     // ── Construction ──────────────────────────────────────────────────────────
 
-    pub async fn new(hwnd: isize, width: u32, height: u32, theme: Theme) -> Result<Self> {
+    pub async fn new(hwnd: isize, width: u32, height: u32, theme: Theme, font_size: f32) -> Result<Self> {
         let _init_guard = GPU_INIT_LOCK.lock().await;
         let instance = Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
@@ -283,7 +283,7 @@ impl GpuRenderer {
             cache:        None,
         });
 
-        let font = FontManager::new(14.0);
+        let font = FontManager::new(font_size);
 
         Ok(GpuRenderer {
             device, queue, surface, surface_config, width, height,
@@ -294,6 +294,18 @@ impl GpuRenderer {
             font, theme,
             cursor_blink_on: true,
         })
+    }
+
+    /// Rebuild the font at a new size and reset the glyph atlas packer so
+    /// stale glyphs (rasterized at the old size) are replaced on next render.
+    /// Caller is responsible for re-deriving cols/rows from the new cell
+    /// metrics and resizing the PTY/grid accordingly.
+    pub fn set_font_size(&mut self, font_size: f32) {
+        self.font = FontManager::new(font_size);
+        self.atlas_glyphs.clear();
+        self.atlas_x = 0;
+        self.atlas_y = 0;
+        self.atlas_row_h = 0;
     }
 
     pub fn toggle_cursor_blink(&mut self) {

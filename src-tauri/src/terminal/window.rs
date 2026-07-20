@@ -23,7 +23,7 @@ use windows::{
 };
 use std::io::Write;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use tokio::sync::mpsc;
 use tauri::AppHandle;
 
@@ -33,6 +33,16 @@ static CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
 
 /// Global prefix mode flag shared across all terminal HWNDs.
 static PREFIX_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// The virtual-key code used as the tmux-style prefix key (default: 'A').
+/// Configurable via settings — see `set_prefix_vk`.
+static PREFIX_VK: AtomicU16 = AtomicU16::new(0x41); // VK_A
+
+/// Update the prefix key used by all terminal HWNDs (existing and future).
+/// `vk` should be an uppercase letter virtual-key code (0x41..=0x5A).
+pub fn set_prefix_vk(vk: u16) {
+    PREFIX_VK.store(vk, Ordering::Relaxed);
+}
 
 /// Data stored in GWLP_USERDATA for each terminal HWND.
 struct WndProcData {
@@ -245,13 +255,14 @@ unsafe extern "system" fn terminal_wnd_proc(
             let ctrl  = GetKeyState(VK_CONTROL.0 as i32) < 0;
             let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
 
-            // ── Ctrl+A: prefix system ────────────────────────────────────
-            if ctrl && vk == VK_A {
+            // ── Ctrl+<prefix key>: prefix system (configurable, default 'A') ─
+            if ctrl && vk.0 == PREFIX_VK.load(Ordering::Relaxed) {
                 if PREFIX_ACTIVE.load(Ordering::Relaxed) {
-                    // Ctrl+A Ctrl+A → send literal Ctrl+A to PTY
+                    // Prefix key pressed twice → send its literal Ctrl+<key> control code to the PTY
                     PREFIX_ACTIVE.store(false, Ordering::Relaxed);
                     send_msg(hwnd, WindowMessage::PrefixDeactivated);
-                    write_pty(hwnd, &[0x01]);
+                    let code = (vk.0.saturating_sub(0x40)) as u8;
+                    write_pty(hwnd, &[code]);
                 } else {
                     PREFIX_ACTIVE.store(true, Ordering::Relaxed);
                     send_msg(hwnd, WindowMessage::PrefixActivated);

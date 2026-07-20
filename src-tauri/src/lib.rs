@@ -12,6 +12,7 @@ mod transcript;
 mod embeddings;
 mod rag;
 mod worktree;
+mod settings;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -38,6 +39,9 @@ pub fn run() {
 
             let state = AppState::new(data_dir.to_str().unwrap(), main_hwnd)
                 .expect("failed to init app state");
+            // Apply the persisted prefix key to the native WndProc immediately —
+            // update_settings only updates it on a later settings change.
+            terminal::window::set_prefix_vk(commands::prefix_key_to_vk(&state.settings.prefix_key));
             app.manage(Mutex::new(state));
 
             // Subclass the main window to track moves and reposition terminal popups
@@ -83,8 +87,8 @@ pub fn run() {
             commands::create_context,
             commands::update_context,
             commands::delete_context,
-            commands::set_theme,
-            commands::get_theme,
+            commands::get_settings,
+            commands::update_settings,
             commands::open_browser,
             commands::set_browser_bounds,
             commands::browser_navigate,

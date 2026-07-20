@@ -2,7 +2,8 @@
 use alacritty_terminal::term::{Term, Config as TermConfig};
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::vte::ansi::{NamedColor, Color as VteColor, Processor};
 use tokio::sync::mpsc;
 use bitflags::bitflags;
@@ -78,6 +79,7 @@ pub struct RenderCell {
     pub fg: CellColor,
     pub bg: CellColor,
     pub flags: CellFlags,
+    pub selected: bool,
 }
 
 /// Immutable snapshot of the visible terminal grid for rendering.
@@ -126,6 +128,26 @@ impl TermGrid {
         self.term.scroll_display(Scroll::Bottom);
     }
 
+    /// Begin a new simple text selection at the given cell (0-indexed within
+    /// the visible viewport).
+    pub fn start_selection(&mut self, col: usize, row: usize) {
+        let point = Point::new(Line(row as i32), Column(col));
+        self.term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+    }
+
+    /// Extend the in-progress selection to the given cell.
+    pub fn update_selection(&mut self, col: usize, row: usize) {
+        if let Some(sel) = &mut self.term.selection {
+            let point = Point::new(Line(row as i32), Column(col));
+            sel.update(point, Side::Right);
+        }
+    }
+
+    /// Extract the currently selected text, if any.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.selection_to_string()
+    }
+
     /// Extract all visible cells for rendering.
     pub fn snapshot(&self) -> GridSnapshot {
         use alacritty_terminal::term::cell::Flags;
@@ -133,6 +155,7 @@ impl TermGrid {
         let grid = self.term.grid();
         let cols = grid.columns();
         let rows = grid.screen_lines();
+        let selection_range = self.term.selection.as_ref().and_then(|s| s.to_range(&self.term));
 
         let mut cells = Vec::with_capacity(cols * rows);
 
@@ -150,7 +173,9 @@ impl TermGrid {
                 if cell.flags.contains(Flags::UNDERLINE) { flags |= CellFlags::UNDERLINE; }
                 if cell.flags.contains(Flags::DIM)       { flags |= CellFlags::DIM; }
 
-                cells.push(RenderCell { col, row: line, ch: cell.c, fg, bg, flags });
+                let selected = selection_range.map_or(false, |r| r.contains(point));
+
+                cells.push(RenderCell { col, row: line, ch: cell.c, fg, bg, flags, selected });
             }
         }
 

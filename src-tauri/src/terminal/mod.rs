@@ -28,6 +28,14 @@ use crate::osc::OscParser;
 
 pub type TerminalId = String;
 
+/// Convert client-area pixel coordinates to a 0-indexed grid cell, clamping
+/// negative coords (e.g. a drag that overshoots above/left of the pane) to 0.
+fn pixel_to_cell(x: i32, y: i32, cell_w: f32, cell_h: f32) -> (usize, usize) {
+    let col = (x.max(0) as f32 / cell_w.max(1.0)) as usize;
+    let row = (y.max(0) as f32 / cell_h.max(1.0)) as usize;
+    (col, row)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalInfo {
     pub id: TerminalId,
@@ -391,6 +399,38 @@ impl TerminalPane {
                         let snap = grid_inp.lock().snapshot();
                         if let Ok(mut r) = renderer_inp.try_lock() {
                             let _ = r.render(&snap);
+                        }
+                    }
+                    // Text selection: convert client pixel coords to a grid
+                    // cell using the renderer's actual font metrics.
+                    WindowMessage::SelectionStart(x, y) => {
+                        if let Ok(r) = renderer_inp.try_lock() {
+                            let (col, row) = pixel_to_cell(x, y, r.font.cell_width, r.font.cell_height);
+                            drop(r);
+                            grid_inp.lock().start_selection(col, row);
+                            let snap = grid_inp.lock().snapshot();
+                            if let Ok(mut r) = renderer_inp.try_lock() {
+                                let _ = r.render(&snap);
+                            }
+                        }
+                    }
+                    WindowMessage::SelectionUpdate(x, y) => {
+                        if let Ok(r) = renderer_inp.try_lock() {
+                            let (col, row) = pixel_to_cell(x, y, r.font.cell_width, r.font.cell_height);
+                            drop(r);
+                            grid_inp.lock().update_selection(col, row);
+                            let snap = grid_inp.lock().snapshot();
+                            if let Ok(mut r) = renderer_inp.try_lock() {
+                                let _ = r.render(&snap);
+                            }
+                        }
+                    }
+                    WindowMessage::CopySelection => {
+                        if let Some(text) = grid_inp.lock().selection_text() {
+                            unsafe {
+                                let win_hwnd = windows::Win32::Foundation::HWND(hwnd as *mut _);
+                                crate::terminal::window::write_clipboard(win_hwnd, &text);
+                            }
                         }
                     }
                     // Click: tell the frontend which terminal has focus

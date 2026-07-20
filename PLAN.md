@@ -47,7 +47,7 @@ _Last verified against the codebase: 2026-07-20._
 - [x] Ctrl+V paste from Win32 clipboard (UTF-16 → UTF-8, `\r\n` normalised)
 - [x] Terminal title updates (OSC 0/2 → tab bar)
 - [x] Pane-resize lag fixed: bounds reporting is rAF-throttled so the terminal tracks divider drags live instead of freezing until mouseup
-- [ ] Text selection (click-drag, Ctrl-Shift-C to copy) — **not implemented**
+- [x] Text selection (click-drag, Ctrl-Shift-C to copy) — native WndProc mouse tracking drives alacritty_terminal's own `Selection`, rendered as inverse video; no word/line select yet (single-cell-range only)
 
 ---
 
@@ -58,7 +58,7 @@ _Last verified against the codebase: 2026-07-20._
 - [x] Close pane (`Ctrl-A d`)
 - [x] Layout persistence (split ratios saved to `tab.layout`, restored on relaunch)
 - [x] Shell/agent picker chords (`Ctrl-A s #`, `Ctrl-A a #`, with `-` for vertical)
-- [ ] Navigate between panes via keyboard (e.g. `Ctrl-A` + arrow keys) — **not implemented**; focus only changes via mouse click
+- [x] Navigate between panes via keyboard (`Ctrl-A` + arrow keys) — geometric nearest-pane selection based on the split tree's computed rects
 - [ ] Tab rename (double-click) — **not implemented**
 
 ---
@@ -105,12 +105,10 @@ _Last verified against the codebase: 2026-07-20._
 
 Roughly in order of "most users will hit this constantly" vs. "one-time/polish":
 
-1. **Pane keyboard navigation** (`Ctrl-A` + arrow keys) — basic multiplexer ergonomics gap, used every session.
-2. **Text selection + copy** — same category; currently there's no way to copy terminal output without OS-level workarounds.
-3. **Tab rename** — small, low-risk, frequently wanted.
-4. **CLAUDE.md/AGENTS.md auto-detect + attach-to-session** — completes the context-manager story that's otherwise mostly built.
-5. **Settings panel** — currently no in-app way to change font size/theme/shell without editing source.
-6. Lower priority / bigger lifts: true ConPTY session reattachment, `vmux` CLI, browser accessibility API, installer.
+1. **Tab rename** — small, low-risk, frequently wanted.
+2. **CLAUDE.md/AGENTS.md auto-detect + attach-to-session** — completes the context-manager story that's otherwise mostly built.
+3. **Settings panel** — currently no in-app way to change font size/theme/shell without editing source.
+4. Lower priority / bigger lifts: true ConPTY session reattachment, `vmux` CLI, browser accessibility API, installer, word/line-select on top of the basic range selection.
 
 ---
 

@@ -14,9 +14,9 @@ use windows::{
     Win32::{
         Foundation::*,
         Graphics::Gdi::{BeginPaint, ClientToScreen, EndPaint, HBRUSH, PAINTSTRUCT},
-        System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard},
+        System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData},
         System::LibraryLoader::GetModuleHandleW,
-        System::Memory::{GlobalLock, GlobalUnlock},
+        System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
         UI::Input::KeyboardAndMouse::*,
         UI::WindowsAndMessaging::*,
     },
@@ -39,6 +39,8 @@ struct WndProcData {
     msg_tx: mpsc::UnboundedSender<WindowMessage>,
     /// Channel for queuing keyboard input — never blocks WndProc, never drops keys.
     pty_input_tx: std::sync::mpsc::Sender<Vec<u8>>,
+    /// Whether a left-button text-selection drag is in progress.
+    dragging: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -56,6 +58,12 @@ pub enum WindowMessage {
     PrefixActivated,
     /// Prefix mode was deactivated.
     PrefixDeactivated,
+    /// Left-button pressed at (x, y) client coords — start a text selection.
+    SelectionStart(i32, i32),
+    /// Mouse moved to (x, y) client coords while dragging — extend the selection.
+    SelectionUpdate(i32, i32),
+    /// Ctrl+Shift+C — copy the current selection to the clipboard.
+    CopySelection,
 }
 
 pub struct TerminalWindow {
@@ -158,6 +166,7 @@ unsafe fn create_window(
     let data = WndProcData {
         msg_tx,
         pty_input_tx: input_tx,
+        dragging: AtomicBool::new(false),
     };
     let data_ptr = Box::into_raw(Box::new(data)) as isize;
     let hinstance = GetModuleHandleW(None)?;
@@ -270,6 +279,12 @@ unsafe extern "system" fn terminal_wnd_proc(
                 return LRESULT(0);
             }
 
+            // ── Ctrl+Shift+C: copy selection (before plain Ctrl+C below) ──
+            if ctrl && shift && vk == VK_C {
+                send_msg(hwnd, WindowMessage::CopySelection);
+                return LRESULT(0);
+            }
+
             // ── Ctrl+key sequences (Ctrl+C, Ctrl+D, etc.) ───────────────
             if ctrl && vk.0 >= 0x41 && vk.0 <= 0x5A {
                 // A=0x41..Z=0x5A → control codes 1..26
@@ -363,6 +378,22 @@ unsafe extern "system" fn terminal_wnd_proc(
                 send_msg(hwnd, WindowMessage::PrefixDeactivated);
             }
             send_msg(hwnd, WindowMessage::Clicked);
+            set_dragging(hwnd, true);
+            let (x, y) = mouse_xy(lparam);
+            send_msg(hwnd, WindowMessage::SelectionStart(x, y));
+            LRESULT(0)
+        }
+
+        WM_MOUSEMOVE => {
+            if is_dragging(hwnd) {
+                let (x, y) = mouse_xy(lparam);
+                send_msg(hwnd, WindowMessage::SelectionUpdate(x, y));
+            }
+            LRESULT(0)
+        }
+
+        WM_LBUTTONUP => {
+            set_dragging(hwnd, false);
             LRESULT(0)
         }
 
@@ -371,6 +402,7 @@ unsafe extern "system" fn terminal_wnd_proc(
             if PREFIX_ACTIVE.swap(false, Ordering::Relaxed) {
                 send_msg(hwnd, WindowMessage::PrefixDeactivated);
             }
+            set_dragging(hwnd, false);
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
 
@@ -404,6 +436,26 @@ unsafe fn send_msg(hwnd: HWND, msg: WindowMessage) {
     if !ptr.is_null() {
         let _ = (*ptr).msg_tx.send(msg);
     }
+}
+
+unsafe fn set_dragging(hwnd: HWND, dragging: bool) {
+    let ptr = get_data(hwnd);
+    if !ptr.is_null() {
+        (*ptr).dragging.store(dragging, Ordering::Relaxed);
+    }
+}
+
+unsafe fn is_dragging(hwnd: HWND) -> bool {
+    let ptr = get_data(hwnd);
+    if ptr.is_null() { return false; }
+    (*ptr).dragging.load(Ordering::Relaxed)
+}
+
+/// Extract (x, y) client coordinates from a mouse message's LPARAM.
+fn mouse_xy(lparam: LPARAM) -> (i32, i32) {
+    let x = (lparam.0 & 0xFFFF) as i16 as i32;
+    let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+    (x, y)
 }
 
 unsafe fn write_pty(hwnd: HWND, data: &[u8]) {
@@ -464,4 +516,27 @@ unsafe fn read_clipboard(hwnd: HWND) -> Option<String> {
     })();
     let _ = CloseClipboard();
     result
+}
+
+/// Write text to the Win32 clipboard as UTF-16.
+pub unsafe fn write_clipboard(hwnd: HWND, text: &str) {
+    const CF_UNICODETEXT: u32 = 13;
+    if OpenClipboard(Some(hwnd)).is_err() { return; }
+
+    let wrote = (|| -> Option<()> {
+        let _ = EmptyClipboard();
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let byte_len = wide.len() * std::mem::size_of::<u16>();
+
+        let hglobal = GlobalAlloc(GMEM_MOVEABLE, byte_len).ok()?;
+        let ptr = GlobalLock(hglobal) as *mut u16;
+        if ptr.is_null() { return None; }
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+        let _ = GlobalUnlock(hglobal);
+        SetClipboardData(CF_UNICODETEXT, Some(HANDLE(hglobal.0))).ok()?;
+        Some(())
+    })();
+
+    let _ = wrote;
+    let _ = CloseClipboard();
 }

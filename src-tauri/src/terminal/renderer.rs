@@ -385,9 +385,12 @@ impl GpuRenderer {
             let dim    = c.flags.contains(CellFlags::DIM);
             let mut fg = resolve_color(&c.fg, true, &self.theme);
             if dim { fg = [fg[0] * 0.6, fg[1] * 0.6, fg[2] * 0.6, fg[3]]; }
+            let mut bg = resolve_color(&c.bg, false, &self.theme);
+            // Selected cells render with fg/bg swapped (classic inverse-video selection).
+            if c.selected { std::mem::swap(&mut fg, &mut bg); }
             Cell {
                 col: c.col, row: c.row, ch: c.ch,
-                fg, bg: resolve_color(&c.bg, false, &self.theme),
+                fg, bg,
                 bold, italic,
             }
         }).collect();

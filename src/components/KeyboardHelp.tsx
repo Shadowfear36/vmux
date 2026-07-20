@@ -10,6 +10,10 @@ const SHORTCUTS: ShortcutItem[] = [
   { key: 'Ctrl-A d', desc: 'Close focused pane' },
   { key: 'Ctrl-A ↑↓←→', desc: 'Move focus to adjacent pane' },
 
+  { section: 'Text selection (no prefix needed)' },
+  { key: 'Click + drag', desc: 'Select text' },
+  { key: 'Ctrl-Shift-C', desc: 'Copy selection to clipboard' },
+
   { section: 'Shell Picker (chord)' },
   { key: 'Ctrl-A s 1-9', desc: 'Open shell #N horizontal' },
   { key: 'Ctrl-A s - 1-9', desc: 'Open shell #N vertical' },

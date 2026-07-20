@@ -1,0 +1,122 @@
+.wt-list-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 380px;
+  z-index: 9000;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 60px;
+}
+
+.wt-list-panel {
+  background: #1f2335;
+  border: 1px solid #292e42;
+  border-radius: 8px;
+  width: 340px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+  overflow: hidden;
+}
+
+.wt-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #292e42;
+  font-size: 13px;
+  font-weight: 600;
+  color: #c0caf5;
+}
+
+.wt-list-close {
+  background: none;
+  border: none;
+  color: #565f89;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  font-family: inherit;
+}
+.wt-list-close:hover { color: #f7768e; }
+
+.wt-list-body {
+  padding: 8px 0;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.wt-list-empty {
+  padding: 16px;
+  font-size: 12px;
+  color: #565f89;
+}
+
+.wt-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+}
+.wt-list-row:hover { background: rgba(255, 255, 255, 0.03); }
+
+.wt-list-info { min-width: 0; }
+
+.wt-list-branch {
+  font-size: 12px;
+  color: #c0caf5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wt-list-main-badge {
+  font-size: 9px;
+  color: #565f89;
+  border: 1px solid #292e42;
+  border-radius: 3px;
+  padding: 1px 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.wt-list-path {
+  font-size: 10px;
+  color: #565f89;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wt-list-delete {
+  background: none;
+  border: 1px solid #292e42;
+  border-radius: 4px;
+  color: #f7768e;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 3px 8px;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+.wt-list-delete:hover { background: rgba(247, 118, 142, 0.1); }
+
+.wt-list-footer {
+  padding: 8px 16px;
+  border-top: 1px solid #292e42;
+  font-size: 11px;
+  color: #565f89;
+}
+.wt-list-footer kbd {
+  background: #1a1b26;
+  border: 1px solid #292e42;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: #7aa2f7;
+}

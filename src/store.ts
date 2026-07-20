@@ -1,7 +1,32 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry, BrowserTabInfo } from './types';
+import { ask } from '@tauri-apps/plugin-dialog';
+import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry, BrowserTabInfo, WorktreeInfo } from './types';
 import { removeNode, splitNode, type SplitNode } from './components/SplitTree';
+
+const CLAUDE_HOOKS_PROMPTED_KEY = 'vmux-claude-hooks-prompted';
+
+/// Before spawning a Claude terminal for the first time, ask the user whether
+/// vmux may install notification hooks into their real ~/.claude/settings.json.
+/// Only prompts once (per browser profile) regardless of the answer.
+async function ensureClaudeHooksConsent(agentId: string): Promise<void> {
+  if (agentId !== 'claude') return;
+  if (localStorage.getItem(CLAUDE_HOOKS_PROMPTED_KEY)) return;
+
+  const alreadyInstalled: boolean = await invoke('has_vmux_hooks');
+  localStorage.setItem(CLAUDE_HOOKS_PROMPTED_KEY, '1');
+  if (alreadyInstalled) return;
+
+  const consent = await ask(
+    'vmux can install hooks into your ~/.claude/settings.json so it can show ' +
+    'notifications when Claude finishes or needs input. This edits your real, ' +
+    'shared Claude Code config (existing hooks are preserved). Install now?',
+    { title: 'Enable Claude notifications?', kind: 'info' }
+  );
+  if (consent) {
+    await invoke('install_claude_hooks');
+  }
+}
 
 interface AppStore {
   // Shells
@@ -43,6 +68,8 @@ interface AppStore {
   splitFocusedPane: (direction: 'horizontal' | 'vertical') => Promise<void>;
   splitFocusedPaneWith: (kind: 'shell' | 'agent', id: string, direction: 'horizontal' | 'vertical') => Promise<void>;
   createWorktreeTab: (branch: string) => Promise<void>;
+  listWorktreesForActiveRepo: () => Promise<{ repoPath: string | null; worktrees: WorktreeInfo[] }>;
+  deleteWorktree: (repoPath: string, branch: string) => Promise<void>;
   saveWorkspaceState: () => Promise<void>;
 
   // Actions
@@ -149,6 +176,8 @@ export const useStore = create<AppStore>((set, get) => ({
       ?? null;
 
     const continueSession = agentId === 'claude';
+
+    await ensureClaudeHooksConsent(agentId);
 
     const info: TerminalInfo = await invoke('create_agent_terminal', {
       agentId,
@@ -906,6 +935,7 @@ export const useStore = create<AppStore>((set, get) => ({
 
     let info: TerminalInfo;
     if (kind === 'agent') {
+      await ensureClaudeHooksConsent(id);
       info = await invoke('create_agent_terminal', {
         agentId: id,
         workingDir: focusedDir,
@@ -961,6 +991,26 @@ export const useStore = create<AppStore>((set, get) => ({
     } catch (e) {
       console.error('[vmux] create worktree failed:', e);
     }
+  },
+
+  listWorktreesForActiveRepo: async () => {
+    const state = get();
+    const ws = state.workspaces.find(w => w.id === state.activeWorkspaceId);
+    const repoPath = ws?.directory
+      ?? (state.focusedTerminalId ? state.terminals[state.focusedTerminalId]?.working_dir : null)
+      ?? null;
+    if (!repoPath) return { repoPath: null, worktrees: [] };
+    try {
+      const worktrees = await invoke<WorktreeInfo[]>('list_worktrees', { repoPath });
+      return { repoPath, worktrees };
+    } catch (e) {
+      console.error('[vmux] list worktrees failed:', e);
+      return { repoPath, worktrees: [] };
+    }
+  },
+
+  deleteWorktree: async (repoPath, branch) => {
+    await invoke('delete_worktree', { repoPath, branch });
   },
 
   setSidebarWidth: (w) => set({ sidebarWidth: w }),

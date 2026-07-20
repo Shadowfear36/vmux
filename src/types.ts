@@ -128,6 +128,12 @@ export interface AgentConfig {
   updated_at: number;
 }
 
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+  is_main: boolean;
+}
+
 export interface GitMeta {
   branch: string | null;
   is_dirty: boolean;

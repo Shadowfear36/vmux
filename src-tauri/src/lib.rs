@@ -108,6 +108,7 @@ pub fn run() {
             commands::save_terminal_scrollback,
             commands::restore_terminal_scrollback,
             commands::list_directory,
+            commands::has_vmux_hooks,
             commands::install_claude_hooks,
             commands::list_projects,
             commands::ensure_project,

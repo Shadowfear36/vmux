@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, State, Emitter};
+use tauri::{AppHandle, State, Emitter};
 use serde::Serialize;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
@@ -42,8 +42,8 @@ pub fn create_terminal(
     let result = s.terminals.spawn(working_dir, &shell)
         .map_err(|e| e.to_string());
     match &result {
-        Ok(info) => eprintln!("[vmux] create_terminal OK: id={} shell={} pid={:?}", info.id, info.shell_name, info.pid),
-        Err(e) => eprintln!("[vmux] create_terminal FAILED: {e}"),
+        Ok(info) => log::info!("create_terminal OK: id={} shell={} pid={:?}", info.id, info.shell_name, info.pid),
+        Err(e) => log::error!("create_terminal FAILED: {e}"),
     }
     result
 }
@@ -98,7 +98,7 @@ pub async fn set_terminal_bounds(
         pane.init_renderer(&app, main_hwnd, bounds, notif_tx, theme, pty_rx)
             .await
             .map_err(|e| {
-                eprintln!("[vmux] init_renderer FAILED for {terminal_id}: {e}");
+                log::error!("init_renderer FAILED for {terminal_id}: {e}");
                 e.to_string()
             })?;
 
@@ -189,10 +189,14 @@ pub fn close_terminal(
                                 // Simple chunking: split on blank lines, max ~4KB per chunk
                                 let chunks = chunk_terminal_output(&captured, 4000);
                                 for (i, chunk) in chunks.iter().enumerate() {
-                                    let _ = s.context.add_chunk(&conv.id, i as i32, "mixed", chunk);
+                                    if let Err(e) = s.context.add_chunk(&conv.id, i as i32, "mixed", chunk) {
+                                        log::error!("failed to store captured chunk {i} for conversation {}: {e}", conv.id);
+                                    }
                                 }
-                                let _ = s.context.end_conversation(&conv.id);
-                                eprintln!("[vmux] captured {} chunks from {} agent session", chunks.len(), agent_type);
+                                if let Err(e) = s.context.end_conversation(&conv.id) {
+                                    log::error!("failed to finalize conversation {}: {e}", conv.id);
+                                }
+                                log::info!("captured {} chunks from {} agent session", chunks.len(), agent_type);
                             }
                         }
                     }
@@ -259,10 +263,8 @@ pub fn create_agent_terminal(
     resume_session: Option<String>,
     continue_session: Option<bool>,
 ) -> Result<TerminalInfo, String> {
-    if agent_id == "claude" && !crate::claude_hooks::has_vmux_hooks() {
-        let _ = crate::claude_hooks::ensure_vmux_hooks();
-    }
-
+    // Hook installation into ~/.claude/settings.json requires explicit user
+    // consent — see `install_claude_hooks`. We never do it implicitly here.
     let mut s = state.lock().map_err(|e| e.to_string())?;
     let agent = s.agents.iter().find(|a| a.id == agent_id)
         .ok_or_else(|| format!("agent not found: {agent_id}"))?
@@ -274,7 +276,7 @@ pub fn create_agent_terminal(
         .map_err(|e| e.to_string());
     match &result {
         Ok(info) => {
-            eprintln!("[vmux] create_agent_terminal OK: id={} agent={} pid={:?}", info.id, info.shell_name, info.pid);
+            log::info!("create_agent_terminal OK: id={} agent={} pid={:?}", info.id, info.shell_name, info.pid);
             // Start notify file watcher for Claude terminals
             if let Some(notify_path) = &info.notify_file {
                 crate::claude_hooks::start_notify_watcher(
@@ -284,11 +286,21 @@ pub fn create_agent_terminal(
                 );
             }
         }
-        Err(e) => eprintln!("[vmux] create_agent_terminal FAILED: {e}"),
+        Err(e) => log::error!("create_agent_terminal FAILED: {e}"),
     }
     result
 }
 
+/// Check whether vmux's Claude Code hooks are already installed in
+/// ~/.claude/settings.json, without modifying anything.
+#[tauri::command]
+pub fn has_vmux_hooks() -> bool {
+    crate::claude_hooks::has_vmux_hooks()
+}
+
+/// Install vmux's Claude Code hooks into ~/.claude/settings.json.
+/// Must only be called after explicit user consent (see frontend prompt in
+/// store.ts) — this mutates the user's real, shared Claude Code config.
 #[tauri::command]
 pub fn install_claude_hooks() -> Result<bool, String> {
     crate::claude_hooks::ensure_vmux_hooks().map_err(|e| e.to_string())
@@ -398,7 +410,7 @@ pub fn restore_workspace_terminals(
                             }));
                             infos.push(info);
                         }
-                        Err(e) => eprintln!("[vmux] restore terminal failed: {e}"),
+                        Err(e) => log::warn!("restore terminal failed: {e}"),
                     }
                 }
             }
@@ -416,7 +428,9 @@ pub fn restore_workspace_terminals(
                 }
             }
             let ws_clone = ws.clone();
-            let _ = s.workspaces.save_workspace(&ws_clone);
+            if let Err(e) = s.workspaces.save_workspace(&ws_clone) {
+                log::error!("failed to persist workspace {workspace_id}: {e}");
+            }
         }
     }
 
@@ -573,7 +587,7 @@ fn create_browser_window(
             true
         })
         .build()
-        .map_err(|e| { eprintln!("[vmux] browser build FAILED: {e}"); e.to_string() })?;
+        .map_err(|e| { log::error!("browser build FAILED: {e}"); e.to_string() })?;
 
     unsafe {
         use windows::Win32::Foundation::HWND;

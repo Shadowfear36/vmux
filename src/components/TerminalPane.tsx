@@ -42,51 +42,72 @@ export function TerminalPane({ terminalId, isFocused, onFocus }: Props) {
     return () => { unsub.then(f => f()); };
   }, [terminalId, onFocus]);
 
-  // ── Bounds reporting (debounced) ───────────────────────────────────────────
+  // ── Bounds reporting (rAF-throttled) ────────────────────────────────────────
+  // During an interactive divider drag, mousemove fires far faster than any
+  // fixed debounce window, so a trailing debounce never gets a chance to run
+  // until the drag ends — the native HWND would freeze mid-drag and only
+  // snap into place on mouseup. Instead we throttle to at most one bounds
+  // read+send per animation frame, and always re-send the latest bounds
+  // immediately after an in-flight call finishes, so the terminal never
+  // drops the final position.
 
-  const boundsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialSentRef = useRef(false);
   const lastBoundsRef = useRef('');
-  const pendingRef = useRef(false);
+  const rafScheduledRef = useRef(false);
+  const sendInFlightRef = useRef(false);
+  const nextPendingBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
 
-  const reportBounds = useCallback(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    const bounds = {
-      x: Math.round(rect.left  * dpr),
-      y: Math.round(rect.top   * dpr),
-      width:  Math.round(rect.width  * dpr),
-      height: Math.round(rect.height * dpr),
-    };
-
-    if (bounds.width < 50 || bounds.height < 30) return;
-
-    // Skip if bounds haven't actually changed
-    const key = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`;
-    if (key === lastBoundsRef.current) return;
-    lastBoundsRef.current = key;
-
-    // First call: immediate (triggers Phase 2 init).
-    if (!initialSentRef.current) {
-      initialSentRef.current = true;
-      setTerminalBounds(terminalId, bounds);
+  const sendBounds = useCallback(async (bounds: { x: number; y: number; width: number; height: number }) => {
+    if (sendInFlightRef.current) {
+      nextPendingBoundsRef.current = bounds;
       return;
     }
-
-    // Subsequent: debounce at 60ms and serialize (skip if a call is in-flight)
-    if (boundsTimerRef.current) clearTimeout(boundsTimerRef.current);
-    boundsTimerRef.current = setTimeout(async () => {
-      if (pendingRef.current) return;
-      pendingRef.current = true;
-      try {
-        await setTerminalBounds(terminalId, bounds);
-      } finally {
-        pendingRef.current = false;
-      }
-    }, 60);
+    sendInFlightRef.current = true;
+    try {
+      await setTerminalBounds(terminalId, bounds);
+    } finally {
+      sendInFlightRef.current = false;
+    }
+    const next = nextPendingBoundsRef.current;
+    if (next) {
+      nextPendingBoundsRef.current = null;
+      sendBounds(next);
+    }
   }, [terminalId, setTerminalBounds]);
+
+  const reportBounds = useCallback(() => {
+    if (rafScheduledRef.current) return;
+    rafScheduledRef.current = true;
+    requestAnimationFrame(() => {
+      rafScheduledRef.current = false;
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const bounds = {
+        x: Math.round(rect.left  * dpr),
+        y: Math.round(rect.top   * dpr),
+        width:  Math.round(rect.width  * dpr),
+        height: Math.round(rect.height * dpr),
+      };
+
+      if (bounds.width < 50 || bounds.height < 30) return;
+
+      // Skip if bounds haven't actually changed
+      const key = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`;
+      if (key === lastBoundsRef.current) return;
+      lastBoundsRef.current = key;
+
+      // First call: immediate (triggers Phase 2 init).
+      if (!initialSentRef.current) {
+        initialSentRef.current = true;
+        setTerminalBounds(terminalId, bounds);
+        return;
+      }
+
+      sendBounds(bounds);
+    });
+  }, [terminalId, setTerminalBounds, sendBounds]);
 
   useEffect(() => {
     showTerminal(terminalId);
@@ -95,9 +116,9 @@ export function TerminalPane({ terminalId, isFocused, onFocus }: Props) {
 
   useEffect(() => {
     // Delay first bounds report to let flex layout settle after a split.
-    // Stagger by a random offset to avoid concurrent wgpu Phase 2 inits
-    // which can crash when multiple surfaces init simultaneously.
-    const delay = initialSentRef.current ? 0 : 100 + Math.random() * 200;
+    // Concurrent wgpu Phase 2 inits across panes are serialized backend-side
+    // (see GPU_INIT_LOCK in renderer.rs), so no client-side stagger is needed.
+    const delay = initialSentRef.current ? 0 : 100;
     const initDelay = setTimeout(() => {
       reportBounds();
     }, delay);

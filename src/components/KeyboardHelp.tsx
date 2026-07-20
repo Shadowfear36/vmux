@@ -24,6 +24,7 @@ const SHORTCUTS: ShortcutItem[] = [
 
   { section: 'Git Worktrees (chord)' },
   { key: 'Ctrl-A w n', desc: 'New worktree (prompts branch)' },
+  { key: 'Ctrl-A w l', desc: 'List / delete worktrees' },
   { key: 'Ctrl-A w +', desc: 'New workspace' },
 
   { section: 'Panels' },

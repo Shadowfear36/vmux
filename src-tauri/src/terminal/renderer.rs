@@ -86,10 +86,18 @@ pub struct GpuRenderer {
     pub cursor_blink_on: bool,
 }
 
+/// Serializes wgpu instance/surface/adapter/device creation across terminal
+/// panes. Concurrent `GpuRenderer::new` calls (e.g. several panes
+/// initializing at once after a workspace restore) have been observed to
+/// crash some Windows GPU drivers during concurrent DX12/Vulkan surface
+/// setup, so only one pane may be mid-init at a time.
+static GPU_INIT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 impl GpuRenderer {
     // ── Construction ──────────────────────────────────────────────────────────
 
     pub async fn new(hwnd: isize, width: u32, height: u32, theme: Theme) -> Result<Self> {
+        let _init_guard = GPU_INIT_LOCK.lock().await;
         let instance = Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
             ..Default::default()

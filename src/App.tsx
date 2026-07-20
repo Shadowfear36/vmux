@@ -10,6 +10,7 @@ import { TabView } from './components/TabView';
 import { BrowserPane } from './components/BrowserPane';
 import { ContextPanel } from './components/ContextPanel';
 import { KeyboardHelp } from './components/KeyboardHelp';
+import { WorktreeList } from './components/WorktreeList';
 import { FileTree } from './components/FileTree';
 import './App.css';
 
@@ -40,7 +41,7 @@ type ChordState = null | 'shell' | 'shell-vert' | 'agent' | 'agent-vert' | 'work
 
 let chordState: ChordState = null;
 
-function handlePrefixCommand(key: string, setShowHelp: (fn: (h: boolean) => boolean) => void, setChordLabel: (l: string | null) => void): boolean {
+function handlePrefixCommand(key: string, setShowHelp: (fn: (h: boolean) => boolean) => void, setChordLabel: (l: string | null) => void, setShowWorktrees: (v: boolean) => void): boolean {
   const store = useStore.getState();
   const ws = store.workspaces.find(w => w.id === store.activeWorkspaceId);
 
@@ -83,6 +84,8 @@ function handlePrefixCommand(key: string, setShowHelp: (fn: (h: boolean) => bool
         if (branch && branch.trim()) {
           store.createWorktreeTab(branch.trim());
         }
+      } else if (key === 'l') {
+        setShowWorktrees(true);
       } else if (key === '+') {
         const count = store.workspaces.length;
         store.createWorkspace(`Project ${count + 1}`);
@@ -142,6 +145,7 @@ export default function App() {
   const [prefixActive, setPrefixActive] = useState(false);
   const [chordLabel, setChordLabel] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [showWorktrees, setShowWorktrees] = useState(false);
 
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
   const activeTab = activeWorkspace?.tabs.find(t => t.id === activeTabId);
@@ -266,7 +270,7 @@ export default function App() {
       if (jsPrefixPending) {
         e.preventDefault();
         if (e.key === '?') { jsPrefixPending = false; setPrefixActive(false); setShowHelp(h => !h); return; }
-        const stayInPrefix = handlePrefixCommand(e.key, setShowHelp, setChordLabel);
+        const stayInPrefix = handlePrefixCommand(e.key, setShowHelp, setChordLabel, setShowWorktrees);
         if (!stayInPrefix) { jsPrefixPending = false; setPrefixActive(false); setChordLabel(null); }
       }
     };
@@ -279,7 +283,7 @@ export default function App() {
     const unsub2 = listen<{}>('prefix:deactivated', () => { setPrefixActive(false); chordState = null; setChordLabel(null); });
     const unsub3 = listen<{ key: string }>('prefix:command', ({ payload }) => {
       if (payload.key === '?') { setPrefixActive(false); setShowHelp(h => !h); return; }
-      const stay = handlePrefixCommand(payload.key, setShowHelp, setChordLabel);
+      const stay = handlePrefixCommand(payload.key, setShowHelp, setChordLabel, setShowWorktrees);
       if (!stay) { setPrefixActive(false); setChordLabel(null); }
     });
     return () => { unsub1.then(f => f()); unsub2.then(f => f()); unsub3.then(f => f()); };
@@ -350,6 +354,7 @@ export default function App() {
       {/* Portals — render overlays into document.body to escape Allotment stacking context */}
       {prefixActive && createPortal(<div className="prefix-indicator">{chordLabel ? `PREFIX ${chordLabel}` : 'PREFIX'}</div>, document.body)}
       {showHelp && createPortal(<KeyboardHelp onClose={() => setShowHelp(false)} />, document.body)}
+      {showWorktrees && createPortal(<WorktreeList onClose={() => setShowWorktrees(false)} />, document.body)}
     </div>
   );
 }

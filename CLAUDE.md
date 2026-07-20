@@ -47,6 +47,7 @@ All IPC goes through `invoke()` / `listen()` from `@tauri-apps/api`. The Zustand
 | `terminal/window.rs` | Win32 child HWND creation. WndProc handles keyboard input → `InputEvent` channel |
 | `terminal/font.rs` | `cosmic-text` font shaping/rasterization. Handles ligatures, CJK, emoji |
 | `terminal/cwd.rs` | Reads a process's current working directory via `NtQueryInformationProcess` (PEB walk) |
+| `terminal/daemon_client.rs` | Client for the experimental `vmuxd` background daemon (see `docs/session-reattach-design.md`). Gated behind `VMUX_DAEMON_TERMINALS`; only `create_terminal` (plain shells) can use it, off by default. `bin/vmuxd.rs` is the daemon binary, `bin/vmuxd_proto.rs`/`vmux_proto_client.rs` are the earlier standalone prototype, `bin/vmuxd_integration_check.rs` is a manual smoke test |
 | `window_tracking.rs` | Subclasses the main HWND to intercept `WM_MOVE` and reposition terminal child HWNDs immediately, avoiding debounced-IPC lag |
 | `workspace.rs` | Workspace/tab/pane layout state, persisted to SQLite |
 | `worktree.rs` | Git worktree create/list/delete (`git2`) so multiple agents can run on isolated branches of the same repo |

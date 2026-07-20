@@ -7,6 +7,7 @@ pub mod input;
 pub mod shell;
 pub mod agents;
 pub mod cwd;
+pub mod daemon_client;
 
 use std::collections::HashMap;
 use anyhow::Result;
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 use self::pty::PtySession;
+use self::daemon_client::DaemonPtySession;
 use self::grid::{TermGrid, TermEvent};
 use self::window::{TerminalWindow, WindowMessage};
 use self::renderer::GpuRenderer;
@@ -79,9 +81,38 @@ impl PaneBounds {
 ///   Phase 1 (sync, <5ms):  PTY spawned, ID returned to frontend immediately.
 ///   Phase 2 (async, lazy): Called when the frontend first reports bounds.
 ///                           Creates the Win32 HWND + initialises wgpu.
+/// Which backend owns the actual PTY. `Daemon` is Phase 2 of
+/// docs/session-reattach-design.md, gated behind VMUX_DAEMON_TERMINALS —
+/// only `TerminalPane::spawn` (plain shells) uses it so far.
+enum PtyBackend {
+    Local(PtySession),
+    Daemon(DaemonPtySession),
+}
+
+impl PtyBackend {
+    fn write(&self, data: &[u8]) -> Result<()> {
+        match self {
+            PtyBackend::Local(p) => p.write(data),
+            PtyBackend::Daemon(p) => p.write(data),
+        }
+    }
+    fn writer_handle(&self) -> Arc<std::sync::Mutex<Box<dyn std::io::Write + Send>>> {
+        match self {
+            PtyBackend::Local(p) => p.writer_handle(),
+            PtyBackend::Daemon(p) => p.writer_handle(),
+        }
+    }
+    fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        match self {
+            PtyBackend::Local(p) => p.resize(cols, rows),
+            PtyBackend::Daemon(p) => p.resize(cols, rows),
+        }
+    }
+}
+
 pub struct TerminalPane {
     pub info: TerminalInfo,
-    pty: PtySession,
+    pty: PtyBackend,
     grid: Arc<Mutex<TermGrid>>,
     /// None until init_renderer() is called with the first real bounds.
     win: Option<TerminalWindow>,
@@ -125,7 +156,64 @@ impl TerminalPane {
 
         let pane = TerminalPane {
             info,
-            pty,
+            pty: PtyBackend::Local(pty),
+            grid: Arc::new(Mutex::new(grid)),
+            win: None,
+            renderer: None,
+            events_rx: Some(events_rx),
+            last_cols: 80,
+            last_rows: 24,
+            capture_buf: Some(Arc::new(std::sync::Mutex::new(String::new()))),
+        };
+        Ok((pane, pty_rx))
+    }
+
+    /// Whether daemon-backed terminals (Phase 2 of the session-reattach
+    /// design doc) are enabled. Only `spawn_maybe_daemon` (plain shells
+    /// created via `create_terminal`) checks this — agent terminals and
+    /// workspace restore always use the local `PtySession` path via `spawn`.
+    pub fn daemon_terminals_enabled() -> bool {
+        std::env::var("VMUX_DAEMON_TERMINALS").is_ok()
+    }
+
+    /// Like `spawn`, but routes through the `vmuxd` daemon when
+    /// `VMUX_DAEMON_TERMINALS` is set. Async because the daemon path needs
+    /// to connect over a named pipe; the local path just wraps `spawn`
+    /// with no real await, so callers should invoke this without holding
+    /// `Mutex<AppState>` across the `.await` (see `commands::create_terminal`).
+    pub async fn spawn_maybe_daemon(working_dir: Option<String>, shell: &ShellProfile) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
+        if !Self::daemon_terminals_enabled() {
+            return Self::spawn(working_dir, shell);
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let effective_dir = working_dir.or_else(|| {
+            std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()
+        });
+
+        let (pty, pty_rx) = DaemonPtySession::spawn(
+            &shell.path, &shell.args, effective_dir.as_deref(), 80, 24,
+        ).await?;
+        let (grid, events_rx) = TermGrid::new(80, 24, pty.writer_handle());
+
+        let info = TerminalInfo {
+            id,
+            title: shell.name.clone(),
+            shell_id: shell.id.clone(),
+            shell_name: shell.name.clone(),
+            working_dir: effective_dir,
+            has_notification: false,
+            notification_message: None,
+            pid: pty.pid,
+            is_agent: false,
+            agent_id: None,
+            claude_session_id: None,
+            notify_file: None,
+        };
+
+        let pane = TerminalPane {
+            info,
+            pty: PtyBackend::Daemon(pty),
             grid: Arc::new(Mutex::new(grid)),
             win: None,
             renderer: None,
@@ -208,7 +296,7 @@ impl TerminalPane {
 
         let pane = TerminalPane {
             info,
-            pty,
+            pty: PtyBackend::Local(pty),
             grid: Arc::new(Mutex::new(grid)),
             win: None,
             renderer: None,
@@ -628,10 +716,15 @@ impl TerminalManager {
         Ok(info)
     }
 
-    #[allow(dead_code)]
-    pub fn insert(&mut self, pane: TerminalPane) -> TerminalInfo {
+    /// Register a pane constructed outside the manager (e.g. via
+    /// `TerminalPane::spawn_maybe_daemon`, which must run without holding
+    /// `Mutex<AppState>` across its `.await`) along with its pending PTY
+    /// output receiver, exactly as `spawn`/`spawn_agent` do internally.
+    pub fn insert(&mut self, pane: TerminalPane, pty_rx: mpsc::UnboundedReceiver<Vec<u8>>) -> TerminalInfo {
         let info = pane.info.clone();
-        self.panes.insert(info.id.clone(), pane);
+        let id = info.id.clone();
+        self.panes.insert(id.clone(), pane);
+        self.pending_rx.insert(id, pty_rx);
         info
     }
 

@@ -1,4 +1,4 @@
-mod terminal;
+pub mod terminal;
 mod osc;
 mod workspace;
 mod git_meta;

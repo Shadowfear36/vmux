@@ -26,25 +26,37 @@ pub fn list_shells(state: State<'_, Mutex<AppState>>) -> Vec<ShellProfile> {
 /// `shell_id` selects which detected shell to launch ("cmd", "powershell", "pwsh", "gitbash").
 /// Falls back to the first detected shell if the requested id is not found.
 #[tauri::command]
-pub fn create_terminal(
+pub async fn create_terminal(
     state: State<'_, Mutex<AppState>>,
     working_dir: Option<String>,
     shell_id: Option<String>,
 ) -> Result<TerminalInfo, String> {
-    let mut s = state.lock().map_err(|e| e.to_string())?;
-    let shell = shell_id
-        .as_deref()
-        .and_then(|id| s.shells.iter().find(|sh| sh.id == id))
-        .or_else(|| s.shells.first())
-        .ok_or("no shells detected")?
-        .clone();
-    let result = s.terminals.spawn(working_dir, &shell)
+    let shell = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        shell_id
+            .as_deref()
+            .and_then(|id| s.shells.iter().find(|sh| sh.id == id))
+            .or_else(|| s.shells.first())
+            .ok_or("no shells detected")?
+            .clone()
+    }; // ← AppState lock released before the (possibly daemon-connecting) spawn
+
+    let result = crate::terminal::TerminalPane::spawn_maybe_daemon(working_dir, &shell)
+        .await
         .map_err(|e| e.to_string());
-    match &result {
-        Ok(info) => log::info!("create_terminal OK: id={} shell={} pid={:?}", info.id, info.shell_name, info.pid),
-        Err(e) => log::error!("create_terminal FAILED: {e}"),
+
+    match result {
+        Ok((pane, pty_rx)) => {
+            let info = state.lock().map_err(|e| e.to_string())?
+                .terminals.insert(pane, pty_rx);
+            log::info!("create_terminal OK: id={} shell={} pid={:?}", info.id, info.shell_name, info.pid);
+            Ok(info)
+        }
+        Err(e) => {
+            log::error!("create_terminal FAILED: {e}");
+            Err(e)
+        }
     }
-    result
 }
 
 /// Called by the frontend's ResizeObserver once the placeholder div has real pixel bounds.

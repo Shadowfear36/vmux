@@ -1,6 +1,6 @@
 # Design: True Session Reattachment (ConPTY Daemon)
 
-Status: **Phase 1 prototype built and validated** (see §12). The rest of the document is still design-only — no integration with the real app yet.
+Status: **Phase 1 and Phase 2 built and validated** (§12, §13). `create_terminal` (plain shells only) can now optionally run through the daemon behind `VMUX_DAEMON_TERMINALS`, off by default. Reattachment itself — the actual point of this doc — still doesn't work yet; that's Phase 3 (persisting `session_id`s so relaunching vmux attaches instead of respawning), not started.
 
 ## 1. Problem statement
 
@@ -107,9 +107,9 @@ Leaning toward (b) for shipping simplicity, but this is a call worth revisiting 
 
 ## 9. Phased rollout (if we proceed)
 
-1. **Prototype the daemon + protocol in isolation**: spawn/attach/write/resize/kill over a named pipe, no UI integration yet, one hardcoded session, to validate the ConPTY-survives-owner-process-restart assumption end-to-end and measure snapshot-over-IPC overhead.
-2. **Wire one TerminalPane through the daemon** behind a feature flag, keep the existing in-process path as the default, so regressions are contained.
-3. **Persist `session_id` in `workspace.rs`** so relaunching vmux reattaches instead of respawning.
+1. **Prototype the daemon + protocol in isolation**: spawn/attach/write/resize/kill over a named pipe, no UI integration yet, one hardcoded session, to validate the ConPTY-survives-owner-process-restart assumption end-to-end and measure snapshot-over-IPC overhead. **Done — see §12.**
+2. **Wire one TerminalPane through the daemon** behind a feature flag, keep the existing in-process path as the default, so regressions are contained. **Done — see §13.**
+3. **Persist `session_id` in `workspace.rs`** so relaunching vmux reattaches instead of respawning. **Not started — this is what actually delivers reattachment; Phase 2 only proves the plumbing works, `spawn_maybe_daemon` always Spawns, never Attaches.**
 4. **Daemon lifecycle hardening**: version handshake, idle shutdown policy, orphan detection.
 5. **Migrate all panes to the daemon path, remove the in-process `PtySession` path.**
 6. **Multi-window support** (two vmux windows attached to the same daemon) — natural fallout of the architecture but worth its own test pass.
@@ -139,3 +139,18 @@ Built (not wired into the app): `src-tauri/src/bin/vmuxd_proto.rs` (daemon) and 
 This confirms the core assumption: a session owned by a separate daemon process survives client disconnects, buffers output while unattached, and correctly replays history plus live-streams new output to whichever client attaches next. The named-pipe + broadcast-channel approach works as designed.
 
 **Also confirmed** (via manually killing the daemon mid-test): killing the *daemon* itself, as opposed to just a client, does leave the child process (and its `conhost.exe`) running as an orphan for a bit — but as noted in the corrected §2, this doesn't help; the orphan becomes unreachable. This is exactly why §5 (daemon lifecycle: startup escaping the job object, clean shutdown policy, orphan cleanup) is real engineering work and not a footnote — the daemon dying, even briefly, has to be treated as a real outage for any sessions it owns, not something recoverable after the fact.
+
+## 13. Phase 2 — real integration, results
+
+Unlike Phase 1 (a standalone prototype, duplicated protocol code, no connection to the real app), Phase 2 wires the actual production code path:
+
+- **`src-tauri/src/terminal/daemon_client.rs`** (new, `pub`): the real `DaemonPtySession`, exposing the same surface as `pty::PtySession` (`write`, `writer_handle`, `resize`) so `TerminalPane` can hold either behind one `PtyBackend` enum without the rest of the pipeline (VT grid feeding, resize logic, rendering) needing any changes. `ensure_daemon_running()` auto-launches `vmuxd.exe` detached (`CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS`) if not already reachable.
+- **`src-tauri/src/bin/vmuxd.rs`** (new, the real daemon): promotes the Phase 1 prototype to a proper multi-session registry (`HashMap<SessionId, Arc<Session>>`) with a `Spawn`/`Attach` handshake as a connection's first message, reusing the exact protocol types from `daemon_client.rs` (no duplicated definitions between daemon and client, unlike Phase 1).
+- **`terminal/mod.rs`**: `TerminalPane.pty` is now `PtyBackend::{Local(PtySession), Daemon(DaemonPtySession)}`. A new `TerminalPane::spawn_maybe_daemon` (async) checks `VMUX_DAEMON_TERMINALS` and branches; the original sync `TerminalPane::spawn` is untouched and still what `spawn_agent`, `TerminalManager::spawn`, and workspace-restore all use — **only `create_terminal` (plain shells, e.g. `Ctrl-A c`) can use the daemon path so far.** Agent terminals and restored terminals are unaffected regardless of the flag.
+- **`commands::create_terminal`** became `async` and now follows the same "lock → extract params → drop lock → do the (possibly slow) work → re-lock → insert" pattern `set_terminal_bounds` already established for GPU init, since connecting to the daemon needs an `.await` that must not happen while holding `Mutex<AppState>`.
+
+**A simplification from §6's assumption**: the daemon does *not* run a VT parser or own `TermGrid` — it only relays raw PTY bytes (plus a raw-byte scrollback buffer for replay), exactly like `PtySession`'s existing output channel shape. `TermGrid`/`alacritty_terminal` stay entirely in the UI process, fed via the daemon's byte stream instead of a direct in-process PTY reader thread. This sidesteps §6's "serialize a full grid snapshot over IPC every render" concern for now — nothing about Phase 2 required solving that. (It will matter once Phase 3 needs *instant* full-grid replay on reattach rather than raw bytes replayed through a fresh parser — worth revisiting then, not before.)
+
+**Validated** via `src-tauri/src/bin/vmuxd_integration_check.rs`, a smoke test that calls `TerminalPane::spawn_maybe_daemon` and `TerminalPane::write_input` directly (the real methods, not a reimplementation): daemon auto-launches, `cmd.exe` spawns through it, output streams back through the real `PtyBackend::Daemon` path into a real `TerminalPane`, and a written command (`echo INTEGRATION_CHECK_OK`) round-trips correctly. `cargo check`/`cargo test` both clean, zero new warnings, all existing tests still pass.
+
+**What Phase 2 does *not* do**: nothing persists a `session_id` anywhere, and `spawn_maybe_daemon` always sends `Spawn`, never `Attach` — so turning the flag on today does not give you reattachment. It proves the backend swap is viable end-to-end; Phase 3 is what actually delivers the feature this whole document is about.

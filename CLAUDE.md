@@ -19,6 +19,9 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 # TypeScript type-check
 npx tsc --noEmit
+
+# Verbose Rust-side logs (default level is error-only via env_logger)
+$env:RUST_LOG="vmux=debug"; npm run tauri dev
 ```
 
 ## Architecture
@@ -43,13 +46,21 @@ All IPC goes through `invoke()` / `listen()` from `@tauri-apps/api`. The Zustand
 | `terminal/renderer.rs` | `wgpu` GPU renderer. Has a wgpu `Surface` per HWND, renders grid snapshots each frame |
 | `terminal/window.rs` | Win32 child HWND creation. WndProc handles keyboard input → `InputEvent` channel |
 | `terminal/font.rs` | `cosmic-text` font shaping/rasterization. Handles ligatures, CJK, emoji |
+| `terminal/cwd.rs` | Reads a process's current working directory via `NtQueryInformationProcess` (PEB walk) |
+| `window_tracking.rs` | Subclasses the main HWND to intercept `WM_MOVE` and reposition terminal child HWNDs immediately, avoiding debounced-IPC lag |
 | `workspace.rs` | Workspace/tab/pane layout state, persisted to SQLite |
-| `context_store.rs` | Agent context entries (notes/files attached to sessions), SQLite-backed |
+| `worktree.rs` | Git worktree create/list/delete (`git2`) so multiple agents can run on isolated branches of the same repo |
+| `context_store.rs` | Agent context entries, projects, conversations, and conversation chunks — SQLite-backed |
+| `transcript.rs` | Imports Claude Code's own JSONL session transcripts (`~/.claude/projects/`) into the context store as conversations/chunks |
+| `embeddings.rs` | Pluggable embedding providers (Voyage AI, OpenAI-compatible, local hash/TF-IDF fallback) for semantic search |
+| `rag.rs` | Cosine-similarity search over embedded conversation chunks |
+| `claude_hooks.rs` | Installs/watches Claude Code lifecycle hooks (Stop/Notification/SessionStart/TaskCompleted) via a side-channel notify file. **Installing hooks mutates the user's real `~/.claude/settings.json` and requires explicit consent — never call `ensure_vmux_hooks`/`install_claude_hooks` without a user-facing prompt first** (see `has_vmux_hooks`/`install_claude_hooks` commands and `ensureClaudeHooksConsent` in `store.ts`) |
 | `git_meta.rs` | Git branch + status via `git2` for sidebar metadata |
 | `osc.rs` | OSC 9/99/777 escape sequence parser for agent `notify` signals |
 | `theme.rs` | Color themes (Tokyo Night, Catppuccin Mocha). Passed to `GpuRenderer` |
+| `browser.rs` | In-app browser tab management; only the active tab gets a live `WebviewWindow` |
 | `commands.rs` | All Tauri IPC command handlers |
-| `state.rs` | `AppState` — shared state behind `Mutex<AppState>` |
+| `state.rs` | `AppState` — shared state behind `Mutex<AppState>`. `embedding_config` (may hold an API key) lives here in memory only and is never persisted to SQLite or disk |
 
 ### Key constraint: async commands must not hold `Mutex<AppState>` across `.await`
 
@@ -84,9 +95,23 @@ When a terminal process emits an OSC escape sequence (OSC 9/99/777), the Rust ba
 
 ### Database
 
-SQLite at `%APPDATA%/vmux/vmux.db`. Two tables:
+SQLite at `%APPDATA%/vmux/vmux.db`. Tables:
 - `workspaces` — serialized workspace JSON
 - `context_entries` — agent context/notes per workspace
+- `projects`, `conversations`, `conversation_chunks` — imported Claude Code transcripts and their chunks, used by the RAG search (`rag.rs`/`embeddings.rs`); chunk embeddings are stored alongside chunks
+- `agent_configs`, `browser_history`, `terminal_scrollback` — agent CLI config, in-app browser history, scrollback persistence
+
+### Semantic search over past conversations
+
+`transcript.rs` imports Claude Code's own JSONL transcripts (`~/.claude/projects/`) into `context_store.rs`. `embeddings.rs` embeds chunks via a pluggable provider (Voyage AI, an OpenAI-compatible endpoint, or a local hash/TF-IDF fallback needing no API key), configured at runtime via `set_embedding_config` — the resulting `EmbeddingConfig` (including any API key) lives only in in-memory `AppState`, never written to the DB. `rag.rs` does cosine-similarity search over pre-computed embeddings; the split between the async embedding call and the sync DB lookup exists so `rusqlite::Connection` is never held across an `.await`.
+
+### Git worktrees
+
+`worktree.rs` creates/lists/deletes git worktrees under `<repo>/.worktrees/<branch>` so multiple agents can work on isolated branches of the same repo simultaneously. Reachable via the `Ctrl-A w` chord: `n` creates one (prompts for branch, opens a new tab there), `l` opens `WorktreeList` (`src/components/WorktreeList.tsx`) to browse/delete existing ones.
+
+### Claude Code hook integration — requires explicit consent
+
+`claude_hooks.rs` can install `Stop`/`Notification`/`SessionStart`/`TaskCompleted` hooks into the user's real, shared `~/.claude/settings.json` so vmux can surface agent lifecycle events as `claude:event` Tauri events (via a polled notify-file side channel). **This mutates config outside the project/app sandbox, so it must never happen implicitly.** The frontend (`ensureClaudeHooksConsent` in `store.ts`) prompts the user once, via `has_vmux_hooks`/`install_claude_hooks`, before the first Claude terminal is spawned; `create_agent_terminal` itself performs no installation.
 
 ### Adding a new Tauri command
 

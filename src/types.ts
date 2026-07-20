@@ -118,6 +118,12 @@ export interface ConversationChunk {
   created_at: number;
 }
 
+export interface DetectedAgentFile {
+  name: string;
+  path: string;
+  content: string;
+}
+
 export interface AgentConfig {
   id: string;
   project_id: string;

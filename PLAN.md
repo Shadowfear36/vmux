@@ -81,8 +81,8 @@ _Last verified against the codebase: 2026-07-20._
 - [x] Context store CRUD (Rust + UI)
 - [x] Claude Code transcript import (`~/.claude/projects/*.jsonl` → conversations/chunks)
 - [x] Semantic search (RAG) over imported conversations — pluggable embedding providers (Voyage AI, OpenAI-compatible, local hash fallback), reachable via ContextPanel's Search tab
-- [ ] Auto-detect `CLAUDE.md` / `AGENTS.md` in working directory — **not implemented**
-- [ ] Attach context to session (paste into terminal / write to file) — **not implemented**
+- [x] Auto-detect `CLAUDE.md` / `AGENTS.md` in working directory — Agent.md tab shows any found in the project path with a "Load into editor" action (`detect_agent_files` command)
+- [x] Attach context to session (paste into terminal) — "Paste into terminal" on both context Notes and the Agent.md editor writes straight to the focused terminal's PTY; "Export to disk" already covered write-to-file for agent.md
 
 ### Git worktrees _(not in original plan — added since)_
 - [x] Create worktree + open in new tab (`Ctrl-A w n`)
@@ -105,9 +105,8 @@ _Last verified against the codebase: 2026-07-20._
 
 Roughly in order of "most users will hit this constantly" vs. "one-time/polish":
 
-1. **CLAUDE.md/AGENTS.md auto-detect + attach-to-session** — completes the context-manager story that's otherwise mostly built.
-2. **Settings panel** — currently no in-app way to change font size/theme/shell without editing source.
-3. Lower priority / bigger lifts: true ConPTY session reattachment, `vmux` CLI, browser accessibility API, installer, word/line-select on top of the basic range selection.
+1. **Settings panel** — currently no in-app way to change font size/theme/shell without editing source.
+2. Lower priority / bigger lifts: true ConPTY session reattachment, `vmux` CLI, browser accessibility API, installer, word/line-select on top of the basic range selection.
 
 ---
 

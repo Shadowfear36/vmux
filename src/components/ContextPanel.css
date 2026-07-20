@@ -355,6 +355,18 @@
   gap: 8px;
 }
 
+.ctx-detected-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: #1a1b26;
+  border: 1px solid #292e42;
+  border-radius: 4px;
+}
+.ctx-detected-label { font-size: 10px; color: #565f89; text-transform: uppercase; letter-spacing: 0.05em; }
+.ctx-detected-row { display: flex; align-items: center; gap: 8px; }
+
 .ctx-save-btn:disabled {
   opacity: 0.5;
   cursor: default;

@@ -119,6 +119,7 @@ pub fn run() {
             commands::get_agent_config,
             commands::save_agent_config,
             commands::export_agent_config,
+            commands::detect_agent_files,
             commands::rag_search,
             commands::embed_chunks,
             commands::set_embedding_config,

@@ -1057,6 +1057,28 @@ pub fn export_agent_config(
         .map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize)]
+pub struct DetectedAgentFile {
+    pub name: String,
+    pub path: String,
+    pub content: String,
+}
+
+/// Look for CLAUDE.md / AGENTS.md already sitting in a project's working
+/// directory, so vmux's own agent_config store can be seeded from (or kept
+/// in sync with) whatever the project already has on disk.
+#[tauri::command]
+pub fn detect_agent_files(project_path: String) -> Vec<DetectedAgentFile> {
+    const CANDIDATES: [&str; 2] = ["CLAUDE.md", "AGENTS.md"];
+    CANDIDATES.iter()
+        .filter_map(|name| {
+            let path = std::path::Path::new(&project_path).join(name);
+            let content = std::fs::read_to_string(&path).ok()?;
+            Some(DetectedAgentFile { name: name.to_string(), path: path.to_string_lossy().to_string(), content })
+        })
+        .collect()
+}
+
 // ─── RAG Search commands ─────────────────────────────────────────────────────
 
 #[tauri::command]

@@ -1,10 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useStore } from '../store';
-import type { ContextEntry, Project, Conversation, ConversationChunk, AgentConfig } from '../types';
+import type { ContextEntry, Project, Conversation, ConversationChunk, AgentConfig, DetectedAgentFile } from '../types';
 import './ContextPanel.css';
 
 type Tab = 'context' | 'conversations' | 'agent' | 'search';
+
+/** Write text to the currently focused terminal's PTY, as if typed/pasted. */
+function pasteIntoTerminal(text: string) {
+  const focusedTerminalId = useStore.getState().focusedTerminalId;
+  if (!focusedTerminalId) {
+    alert('No focused terminal to paste into.');
+    return;
+  }
+  invoke('write_terminal', {
+    terminalId: focusedTerminalId,
+    data: Array.from(new TextEncoder().encode(text)),
+  });
+}
 
 export function ContextPanel() {
   const [activeTab, setActiveTab] = useState<Tab>('context');
@@ -87,6 +100,7 @@ function ContextTab() {
             onCopy={() => navigator.clipboard.writeText(entry.content)}
             onDelete={() => deleteContext(entry.id)}
             onUpdate={updateContextEntry}
+            onPaste={() => pasteIntoTerminal(entry.content)}
           />
         ))}
       </div>
@@ -94,9 +108,9 @@ function ContextTab() {
   );
 }
 
-function ContextEntryCard({ entry, expanded, onToggle, onCopy, onDelete, onUpdate }: {
+function ContextEntryCard({ entry, expanded, onToggle, onCopy, onDelete, onUpdate, onPaste }: {
   entry: ContextEntry; expanded: boolean; onToggle: () => void;
-  onCopy: () => void; onDelete: () => void;
+  onCopy: () => void; onDelete: () => void; onPaste: () => void;
   onUpdate: (id: string, title?: string, content?: string, tags?: string[]) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -133,6 +147,7 @@ function ContextEntryCard({ entry, expanded, onToggle, onCopy, onDelete, onUpdat
               <pre className="ctx-entry-content">{entry.content}</pre>
               <div className="ctx-entry-actions">
                 <button className="ctx-action-btn" onClick={onCopy}>Copy</button>
+                <button className="ctx-action-btn" onClick={onPaste}>Paste into terminal</button>
                 <button className="ctx-action-btn" onClick={() => setEditing(true)}>Edit</button>
                 <button className="ctx-action-btn ctx-action-delete" onClick={onDelete}>Delete</button>
               </div>
@@ -240,16 +255,23 @@ function AgentConfigTab() {
   const [config, setConfig] = useState<AgentConfig | null>(null);
   const [editContent, setEditContent] = useState('');
   const [dirty, setDirty] = useState(false);
+  const [detected, setDetected] = useState<DetectedAgentFile[]>([]);
 
   useEffect(() => {
     invoke<Project[]>('list_projects').then(setProjects).catch(() => {});
   }, []);
 
   useEffect(() => {
-    if (!selectedProject) { setConfig(null); setEditContent(''); return; }
+    if (!selectedProject) { setConfig(null); setEditContent(''); setDetected([]); return; }
     invoke<AgentConfig | null>('get_agent_config', { projectId: selectedProject })
       .then(c => { setConfig(c); setEditContent(c?.content ?? ''); setDirty(false); })
       .catch(() => {});
+
+    const project = projects.find(p => p.id === selectedProject);
+    if (project) {
+      invoke<DetectedAgentFile[]>('detect_agent_files', { projectPath: project.path })
+        .then(setDetected).catch(() => setDetected([]));
+    }
   }, [selectedProject]);
 
   const handleSave = async () => {
@@ -279,6 +301,22 @@ function AgentConfigTab() {
       </div>
       {selectedProject ? (
         <div className="ctx-agent-editor">
+          {detected.length > 0 && (
+            <div className="ctx-detected-files">
+              <div className="ctx-detected-label">Found in working directory:</div>
+              {detected.map(f => (
+                <div key={f.path} className="ctx-detected-row">
+                  <span className="ctx-tag">{f.name}</span>
+                  <button
+                    className="ctx-action-btn"
+                    onClick={() => { setEditContent(f.content); setDirty(true); }}
+                  >
+                    Load into editor
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <textarea
             className="ctx-agent-textarea"
             value={editContent}
@@ -290,6 +328,7 @@ function AgentConfigTab() {
               {dirty ? 'Save' : 'Saved'}
             </button>
             <button className="ctx-action-btn" onClick={handleExport}>Export to disk</button>
+            <button className="ctx-action-btn" onClick={() => pasteIntoTerminal(editContent)}>Paste into terminal</button>
           </div>
         </div>
       ) : (

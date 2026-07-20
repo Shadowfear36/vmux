@@ -1,13 +1,15 @@
 # vmux — Implementation Plan
 
+_Last verified against the codebase: 2026-07-20._
+
 ## Status Legend
 - [x] Done (compiles, works)
-- [~] Scaffolded (compiles, not wired up)
+- [~] Partially done / half-wired (backend exists, frontend gap or vice versa)
 - [ ] Not started
 
 ---
 
-## Phase 1 — App launches and doesn't crash ✅ (current)
+## Phase 1 — App launches and doesn't crash ✅
 
 - [x] Tauri app boots, window opens
 - [x] Sidebar renders (Tokyo Night theme)
@@ -20,80 +22,95 @@
 
 ## Phase 2 — Terminals actually open ✅
 
-- [x] Fix A: `CreateWindowExW` dispatched to main thread via `run_on_main_thread` + `std::sync::mpsc`
-- [x] Fix B: Two-phase terminal creation (PTY sync + renderer async via ResizeObserver)
-- [x] Fix C: Win32 input (WndProc `win_rx`) wired to PTY via `Arc<Mutex<writer>>`
-- [x] Fix D: "Loading terminal" — `createTerminalInTab` now calls `add_pane` after PTY spawn
-- [x] Zero compiler warnings
-- [x] Fix E: Terminal HWNDs switched from `WS_CHILD` to `WS_POPUP` — WebView2 DirectComposition covers WS_CHILD; owned popups render above it
-- [x] Fix F: Show/hide terminal popups on tab switch (`show_terminal` / `hide_terminal` commands)
+- [x] `CreateWindowExW` dispatched to main thread via `run_on_main_thread`
+- [x] Two-phase terminal creation (PTY sync + renderer async via ResizeObserver)
+- [x] Win32 input (WndProc) wired to PTY via `Arc<Mutex<writer>>`
+- [x] Terminal HWNDs use `WS_POPUP` (renders above WebView2's DirectComposition layer)
+- [x] Show/hide terminal popups on tab switch
 
 ---
 
 ## Phase 3 — Terminal renders text (GPU renderer) ✅
 
-- [x] Pipelines: bg quad (solid colour) + glyph atlas (coverage mask)
+- [x] wgpu pipelines: bg quad (solid colour) + glyph atlas (coverage mask)
 - [x] Glyph atlas: 2048×2048 Rgba8Unorm, shelf-packed, rasterized via cosmic-text
-- [x] Background quads: per-cell coloured rects (clears + cell backgrounds + cursor)
-- [x] Glyph quads: textured quads with NDC conversion, per-vertex fg colour + alpha blend
-- [x] Cursor: semi-transparent rect overlay at cursor position
 - [x] Full 256-colour + NamedColor + RGB colour resolution (all theme variants)
-- [x] Re-render triggered on every PTY output batch
-- [ ] Verify it actually draws in the running app (needs Phase 2 HWND placement confirmed)
+- [x] Cursor: semi-transparent rect overlay, blink animation (530ms toggle)
+- [x] Concurrent-init crash risk fixed: `GPU_INIT_LOCK` mutex serializes wgpu surface/adapter/device creation across panes
 
 ---
 
-## Phase 4 — Terminal feels right (CURRENT)
+## Phase 4 — Terminal feels right
 
-- [x] Cell size consistency: use renderer's actual font metrics for PTY/grid sizing
-- [x] Scrollback: mouse wheel scrolls history; any keypress snaps back to bottom
-- [x] Ctrl+V paste from Win32 clipboard (UTF-16 → UTF-8, \r\n normalised)
-- [x] Terminal title updates (OSC 0/2 → `terminal:title` Tauri event → tab bar)
-- [ ] Text selection (click-drag, Ctrl-Shift-C to copy)
-- [x] Blinking cursor animation (530ms toggle, blink task in init_renderer)
-- [x] Shift+PageUp/Down scrollback keys
+- [x] Cell size consistency: renderer's actual font metrics drive PTY/grid sizing
+- [x] Scrollback: mouse wheel scrolls history; any keypress snaps back to bottom; Shift+PageUp/Down
+- [x] Ctrl+V paste from Win32 clipboard (UTF-16 → UTF-8, `\r\n` normalised)
+- [x] Terminal title updates (OSC 0/2 → tab bar)
+- [x] Pane-resize lag fixed: bounds reporting is rAF-throttled so the terminal tracks divider drags live instead of freezing until mouseup
+- [ ] Text selection (click-drag, Ctrl-Shift-C to copy) — **not implemented**
 
 ---
 
 ## Phase 5 — Multiplexer features
 
-- [ ] Horizontal split (Ctrl-A |)
-- [ ] Vertical split (Ctrl-A -)
-- [ ] Navigate splits (Ctrl-A arrow keys)
-- [ ] Close pane (Ctrl-A d)
-- [ ] Layout persistence (save/restore splits per tab)
-- [ ] Tab rename (double-click)
+- [x] Horizontal split (`Ctrl-A c` / `|` / `%`)
+- [x] Vertical split (`Ctrl-A -` / `"`)
+- [x] Close pane (`Ctrl-A d`)
+- [x] Layout persistence (split ratios saved to `tab.layout`, restored on relaunch)
+- [x] Shell/agent picker chords (`Ctrl-A s #`, `Ctrl-A a #`, with `-` for vertical)
+- [ ] Navigate between panes via keyboard (e.g. `Ctrl-A` + arrow keys) — **not implemented**; focus only changes via mouse click
+- [ ] Tab rename (double-click) — **not implemented**
 
 ---
 
 ## Phase 6 — AI agent features
 
-### Notifications (cmux parity)
-- [~] OSC detection → frontend notification badge (implemented, needs Phase 2 done to test)
-- [ ] `vmux notify <message>` CLI command (writes OSC sequence to current tty)
-- [ ] Notification bell sound (optional)
+### Notifications
+- [x] OSC 9/99/777 detection → `terminal:notification` event → sidebar badge (works for any agent CLI, not Claude-specific)
+- [x] Claude Code hook integration (`Stop`/`Notification`/`SessionStart`/`TaskCompleted` via side-channel file) — gated behind an explicit one-time user consent prompt before install, never silent
+- [ ] `vmux notify <message>` CLI command — **not implemented**
+- [ ] Notification bell sound — **not implemented**
 
 ### Browser pane
-- [ ] Open Tauri child webview as browser pane
-- [ ] URL bar + navigation
-- [ ] vmux API: snapshot accessibility tree, click element, fill form (port of cmux's browser API)
+- [x] In-app browser tab as a Tauri child webview
+- [x] URL bar + navigation, tab list
+- [x] Agent-driven browser control via `\x1b]vmux;...\x07` OSC commands (open/navigate/close/eval JS)
+- [ ] Structured accessibility/interaction API (snapshot tree, click element, fill form) — **not implemented**; only URL nav + arbitrary JS eval exist
 
-### Context manager
-- [~] Context store CRUD (Rust done, UI scaffolded)
-- [ ] Context editor UI (markdown, tags)
-- [ ] Attach context to session (paste into terminal / write to file)
-- [ ] Auto-detect CLAUDE.md / AGENTS.md in working directory
+### Context manager & semantic search
+- [x] Context store CRUD (Rust + UI)
+- [x] Claude Code transcript import (`~/.claude/projects/*.jsonl` → conversations/chunks)
+- [x] Semantic search (RAG) over imported conversations — pluggable embedding providers (Voyage AI, OpenAI-compatible, local hash fallback), reachable via ContextPanel's Search tab
+- [ ] Auto-detect `CLAUDE.md` / `AGENTS.md` in working directory — **not implemented**
+- [ ] Attach context to session (paste into terminal / write to file) — **not implemented**
+
+### Git worktrees _(not in original plan — added since)_
+- [x] Create worktree + open in new tab (`Ctrl-A w n`)
+- [x] List / delete worktrees UI (`Ctrl-A w l`)
 
 ---
 
 ## Phase 7 — Polish
 
-- [ ] Catppuccin / other theme support (Rust theme structs done)
-- [ ] Font picker (use cosmic-text font discovery)
-- [ ] Settings panel (font size, theme, shell path, keybindings)
-- [ ] vmux CLI (external process sends commands via named pipe)
-- [ ] Session persistence (reattach terminals after restart using ConPTY serialization)
-- [ ] Windows installer (MSI via Tauri bundler)
+- [x] Catppuccin Mocha theme (alongside Tokyo Night)
+- [ ] Font picker (cosmic-text font discovery exists; no UI to choose)
+- [ ] Settings panel (font size, theme, shell path, keybindings) — **not implemented**
+- [ ] `vmux` external CLI (named pipe control) — **not implemented**
+- [~] Session persistence — scrollback *text* is saved/replayed across restarts (works), but this is not true ConPTY process reattachment; closing vmux still ends the underlying shell/agent process
+- [ ] Windows installer (MSI via Tauri bundler) — **not implemented**
+
+---
+
+## Suggested next priorities
+
+Roughly in order of "most users will hit this constantly" vs. "one-time/polish":
+
+1. **Pane keyboard navigation** (`Ctrl-A` + arrow keys) — basic multiplexer ergonomics gap, used every session.
+2. **Text selection + copy** — same category; currently there's no way to copy terminal output without OS-level workarounds.
+3. **Tab rename** — small, low-risk, frequently wanted.
+4. **CLAUDE.md/AGENTS.md auto-detect + attach-to-session** — completes the context-manager story that's otherwise mostly built.
+5. **Settings panel** — currently no in-app way to change font size/theme/shell without editing source.
+6. Lower priority / bigger lifts: true ConPTY session reattachment, `vmux` CLI, browser accessibility API, installer.
 
 ---
 
@@ -101,5 +118,6 @@
 - Terminal rendering: wgpu + cosmic-text in native Win32 HWND (not xterm.js)
 - Shell: cmd.exe default, configurable
 - Prefix key: Ctrl-A
-- Theme base: Tokyo Night
-- Persistence: SQLite at %APPDATA%/vmux/vmux.db
+- Theme base: Tokyo Night (Catppuccin Mocha also available)
+- Persistence: SQLite at `%APPDATA%/vmux/vmux.db`
+- Claude Code hook installation always requires an explicit user prompt — never silent (see `CLAUDE.md`)

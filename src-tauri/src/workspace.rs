@@ -242,6 +242,17 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    pub fn rename_tab(&mut self, workspace_id: &str, tab_id: &str, name: &str) -> Result<()> {
+        if let Some(ws) = self.workspaces.get_mut(workspace_id) {
+            if let Some(tab) = ws.tabs.iter_mut().find(|t| t.id == tab_id) {
+                tab.name = name.to_string();
+            }
+            let ws_clone = ws.clone();
+            self.save_workspace(&ws_clone)?;
+        }
+        Ok(())
+    }
+
     pub fn set_tab_direction(&mut self, workspace_id: &str, tab_id: &str, direction: &str) -> Result<()> {
         if let Some(ws) = self.workspaces.get_mut(workspace_id) {
             if let Some(tab) = ws.tabs.iter_mut().find(|t| t.id == tab_id) {
@@ -338,6 +349,24 @@ mod tests {
         assert_eq!(mgr.workspaces.len(), 1);
         assert!(mgr.active_workspace_id.is_some());
         assert_eq!(mgr.list()[0].name, "Default");
+    }
+
+    #[test]
+    fn rename_tab_persists_across_reopen() {
+        let db = TempDb::new();
+
+        let (ws_id, tab_id) = {
+            let mut mgr = WorkspaceManager::new(db.path()).unwrap();
+            let ws = mgr.create_workspace("Project").unwrap();
+            let tab = mgr.add_tab(&ws.id, "Tab 1").unwrap();
+            mgr.rename_tab(&ws.id, &tab.id, "Renamed").unwrap();
+            (ws.id, tab.id)
+        };
+
+        let mgr2 = WorkspaceManager::new(db.path()).unwrap();
+        let ws2 = mgr2.workspaces.get(&ws_id).unwrap();
+        let tab2 = ws2.tabs.iter().find(|t| t.id == tab_id).unwrap();
+        assert_eq!(tab2.name, "Renamed");
     }
 
     #[test]

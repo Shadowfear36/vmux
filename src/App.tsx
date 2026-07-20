@@ -149,13 +149,15 @@ function handlePrefixCommand(key: string, setShowHelp: (fn: (h: boolean) => bool
 export default function App() {
   const {
     workspaces, activeWorkspaceId, activeTabId,
-    loadWorkspaces, loadShells, addTab, setActiveTab,
+    loadWorkspaces, loadShells, addTab, setActiveTab, renameTab,
     showBrowser, showContext, showFileTree, showGitDiff,
   } = useStore();
 
   const [prefixActive, setPrefixActive] = useState(false);
   const [chordLabel, setChordLabel] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [editingTabName, setEditingTabName] = useState('');
   const [showWorktrees, setShowWorktrees] = useState(false);
 
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
@@ -325,9 +327,29 @@ export default function App() {
                     key={tab.id}
                     className={`tabbar-item ${tab.id === activeTabId ? 'tabbar-item-active' : ''}`}
                     onClick={() => setActiveTab(tab.id)}
+                    onDoubleClick={() => { setEditingTabId(tab.id); setEditingTabName(tab.name); }}
                   >
                     <span className="tabbar-index">{i + 1}</span>
-                    {tab.name}
+                    {editingTabId === tab.id ? (
+                      <input
+                        className="tabbar-rename-input"
+                        autoFocus
+                        value={editingTabName}
+                        onClick={e => e.stopPropagation()}
+                        onDoubleClick={e => e.stopPropagation()}
+                        onChange={e => setEditingTabName(e.target.value)}
+                        onBlur={() => {
+                          const name = editingTabName.trim();
+                          if (name && activeWorkspaceId) renameTab(activeWorkspaceId, tab.id, name);
+                          setEditingTabId(null);
+                        }}
+                        onKeyDown={e => {
+                          e.stopPropagation();
+                          if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); }
+                          else if (e.key === 'Escape') { setEditingTabId(null); }
+                        }}
+                      />
+                    ) : tab.name}
                   </div>
                 ))}
               </div>

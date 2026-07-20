@@ -458,6 +458,13 @@ pub fn rename_workspace(state: State<'_, Mutex<AppState>>, workspace_id: String,
 }
 
 #[tauri::command]
+pub fn rename_tab(state: State<'_, Mutex<AppState>>, workspace_id: String, tab_id: String, name: String) -> Result<(), String> {
+    state.lock().map_err(|e| e.to_string())?
+        .workspaces.rename_tab(&workspace_id, &tab_id, &name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn set_workspace_directory(state: State<'_, Mutex<AppState>>, workspace_id: String, directory: Option<String>) -> Result<(), String> {
     state.lock().map_err(|e| e.to_string())?
         .workspaces.set_workspace_directory(&workspace_id, directory.as_deref())

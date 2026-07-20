@@ -120,6 +120,7 @@ interface AppStore {
 
   // Workspace management
   renameWorkspace: (workspaceId: string, name: string) => Promise<void>;
+  renameTab: (workspaceId: string, tabId: string, name: string) => Promise<void>;
   setWorkspaceDirectory: (workspaceId: string, directory: string | null) => Promise<void>;
   deleteWorkspace: (workspaceId: string) => Promise<void>;
   cycleTab: (direction: 'next' | 'prev') => void;
@@ -732,6 +733,17 @@ export const useStore = create<AppStore>((set, get) => ({
     set(s => ({
       workspaces: s.workspaces.map(ws =>
         ws.id === workspaceId ? { ...ws, name } : ws
+      ),
+    }));
+  },
+
+  renameTab: async (workspaceId, tabId, name) => {
+    await invoke('rename_tab', { workspaceId, tabId, name });
+    set(s => ({
+      workspaces: s.workspaces.map(ws =>
+        ws.id === workspaceId
+          ? { ...ws, tabs: ws.tabs.map(t => t.id === tabId ? { ...t, name } : t) }
+          : ws
       ),
     }));
   },

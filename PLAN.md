@@ -59,7 +59,7 @@ _Last verified against the codebase: 2026-07-20._
 - [x] Layout persistence (split ratios saved to `tab.layout`, restored on relaunch)
 - [x] Shell/agent picker chords (`Ctrl-A s #`, `Ctrl-A a #`, with `-` for vertical)
 - [x] Navigate between panes via keyboard (`Ctrl-A` + arrow keys) — geometric nearest-pane selection based on the split tree's computed rects
-- [ ] Tab rename (double-click) — **not implemented**
+- [x] Tab rename (double-click) — inline input in the tab bar; Enter/blur commits, Escape cancels
 
 ---
 
@@ -105,10 +105,9 @@ _Last verified against the codebase: 2026-07-20._
 
 Roughly in order of "most users will hit this constantly" vs. "one-time/polish":
 
-1. **Tab rename** — small, low-risk, frequently wanted.
-2. **CLAUDE.md/AGENTS.md auto-detect + attach-to-session** — completes the context-manager story that's otherwise mostly built.
-3. **Settings panel** — currently no in-app way to change font size/theme/shell without editing source.
-4. Lower priority / bigger lifts: true ConPTY session reattachment, `vmux` CLI, browser accessibility API, installer, word/line-select on top of the basic range selection.
+1. **CLAUDE.md/AGENTS.md auto-detect + attach-to-session** — completes the context-manager story that's otherwise mostly built.
+2. **Settings panel** — currently no in-app way to change font size/theme/shell without editing source.
+3. Lower priority / bigger lifts: true ConPTY session reattachment, `vmux` CLI, browser accessibility API, installer, word/line-select on top of the basic range selection.
 
 ---
 

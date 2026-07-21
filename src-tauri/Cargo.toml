@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Windows terminal multiplexer for AI coding agents"
 authors = ["Dylan"]
 edition = "2021"
+default-run = "vmux"
 
 [lib]
 name = "vmux_lib"

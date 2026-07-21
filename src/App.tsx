@@ -5,10 +5,9 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Allotment } from 'allotment';
 import 'allotment/dist/style.css';
 import { useStore } from './store';
-import { findPaneInDirection } from './components/SplitTree';
+import { findPaneInDirection, getBrowserPaneIds } from './components/SplitTree';
 import { Sidebar } from './components/Sidebar';
 import { TabView } from './components/TabView';
-import { BrowserPane } from './components/BrowserPane';
 import { ContextPanel } from './components/ContextPanel';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { WorktreeList } from './components/WorktreeList';
@@ -129,7 +128,7 @@ function handlePrefixCommand(key: string, setShowHelp: (fn: (h: boolean) => bool
     case 'n': store.cycleTab('next'); break;
     case 'p': store.cycleTab('prev'); break;
     case 'x': store.toggleContext(); break;
-    case 'b': store.toggleBrowser(); break;
+    case 'b': store.splitFocusedPaneWithBrowser('horizontal'); break;
     case 'f': store.toggleFileTree(); break;
     case 'g': store.toggleGitDiff(); break;
     case 'd': if (store.focusedTerminalId) store.closeTerminal(store.focusedTerminalId); break;
@@ -150,7 +149,7 @@ export default function App() {
   const {
     workspaces, activeWorkspaceId, activeTabId,
     loadWorkspaces, loadShells, addTab, setActiveTab, renameTab,
-    showBrowser, showContext, showFileTree, showGitDiff,
+    showContext, showFileTree, showGitDiff,
     showSettings, toggleSettings,
   } = useStore();
 
@@ -257,15 +256,16 @@ export default function App() {
     const unsubs: Promise<() => void>[] = [];
     unsubs.push(listen<{ terminalId: string; url: string }>('agent:browser-open', ({ payload }) => {
       const store = useStore.getState();
-      if (!store.showBrowser) store.toggleBrowser();
-      setTimeout(() => store.browserNavigate(payload.url), 300);
+      // Open a browser pane if none exists, then navigate to the URL
+      const hasAnyBrowser = Object.values(store.splitTrees).some(tree => getBrowserPaneIds(tree).length > 0);
+      if (!hasAnyBrowser) store.splitFocusedPaneWithBrowser('horizontal');
+      // Emit a navigate event for the first browser pane
+      setTimeout(() => {
+        import('@tauri-apps/api/event').then(({ emit }) => emit('ipc:browser-navigate', { url: payload.url }));
+      }, 300);
     }));
     unsubs.push(listen<{ terminalId: string; url: string }>('agent:browser-navigate', ({ payload }) => {
-      useStore.getState().browserNavigate(payload.url);
-    }));
-    unsubs.push(listen<{ terminalId: string }>('agent:browser-close', () => {
-      const store = useStore.getState();
-      if (store.showBrowser) store.toggleBrowser();
+      import('@tauri-apps/api/event').then(({ emit }) => emit('ipc:browser-navigate', { url: payload.url }));
     }));
     unsubs.push(listen<{ terminalId: string; js: string }>('agent:browser-eval', ({ payload }) => {
       useStore.getState().browserEvaluate(payload.js);
@@ -359,19 +359,11 @@ export default function App() {
             )}
 
             <div className="app-content">
-              {/* Terminal + Browser — resizable split */}
-              <Allotment>
-                <Allotment.Pane minSize={200}>
-                  {activeTab ? (
-                    <TabView tab={activeTab} />
-                  ) : (
-                    <WelcomeScreen onStart={() => activeWorkspaceId && addTab(activeWorkspaceId, 'Workspace')} />
-                  )}
-                </Allotment.Pane>
-                <Allotment.Pane minSize={200} preferredSize={500} visible={showBrowser}>
-                  <BrowserPane />
-                </Allotment.Pane>
-              </Allotment>
+              {activeTab ? (
+                <TabView tab={activeTab} />
+              ) : (
+                <WelcomeScreen onStart={() => activeWorkspaceId && addTab(activeWorkspaceId, 'Workspace')} />
+              )}
             </div>
           </div>
         </Allotment.Pane>

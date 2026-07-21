@@ -146,6 +146,9 @@ export interface Settings {
   default_shell_id: string | null;
   font_size: number;
   prefix_key: string;
+  /** Shell command to open files from the file tree. %f is replaced by the path.
+   *  Default (null) falls back to "vim". */
+  open_file_command: string | null;
 }
 
 export interface GitMeta {

@@ -34,6 +34,9 @@ enum IpcRequest {
     Ping,
     Notify { message: String },
     List,
+    BrowserNavigate { url: String },
+    BrowserScreenshot { output_path: Option<String> },
+    BrowserGetUrl,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +52,8 @@ enum IpcResponse {
     Ok,
     Terminals(Vec<TerminalSummary>),
     Error(String),
+    Screenshot { path: String },
+    BrowserUrl { url: String },
 }
 
 // ─── Framing (mirrors daemon_client::{write_framed, read_framed}) ──────────────
@@ -135,6 +140,39 @@ async fn cmd_list() -> Result<()> {
     }
 }
 
+/// vmux browser navigate <url>
+async fn cmd_browser_navigate(url: &str) -> Result<()> {
+    match ipc_call(IpcRequest::BrowserNavigate { url: url.to_string() }).await? {
+        IpcResponse::Ok => Ok(()),
+        IpcResponse::Error(e) => bail!("vmux error: {e}"),
+        other => bail!("unexpected response: {other:?}"),
+    }
+}
+
+/// vmux browser screenshot [path]
+async fn cmd_browser_screenshot(output_path: Option<String>) -> Result<()> {
+    match ipc_call(IpcRequest::BrowserScreenshot { output_path }).await? {
+        IpcResponse::Screenshot { path } => {
+            println!("{path}");
+            Ok(())
+        }
+        IpcResponse::Error(e) => bail!("vmux error: {e}"),
+        other => bail!("unexpected response: {other:?}"),
+    }
+}
+
+/// vmux browser url
+async fn cmd_browser_url() -> Result<()> {
+    match ipc_call(IpcRequest::BrowserGetUrl).await? {
+        IpcResponse::BrowserUrl { url } => {
+            println!("{url}");
+            Ok(())
+        }
+        IpcResponse::Error(e) => bail!("vmux error: {e}"),
+        other => bail!("unexpected response: {other:?}"),
+    }
+}
+
 // ─── Entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -152,12 +190,34 @@ async fn main() -> Result<()> {
         }
         Some("ping") => cmd_ping().await,
         Some("list") => cmd_list().await,
+        Some("browser") => {
+            match args.get(2).map(String::as_str) {
+                Some("navigate") => {
+                    let url = args.get(3).ok_or_else(|| anyhow::anyhow!("usage: vmuxctl browser navigate <url>"))?;
+                    cmd_browser_navigate(url).await
+                }
+                Some("screenshot") => {
+                    let output_path = args.get(3).cloned();
+                    cmd_browser_screenshot(output_path).await
+                }
+                Some("url") => cmd_browser_url().await,
+                _ => {
+                    eprintln!("vmuxctl browser — browser pane control\n");
+                    eprintln!("usage:");
+                    eprintln!("  vmuxctl browser navigate <url>       navigate the browser to a URL");
+                    eprintln!("  vmuxctl browser screenshot [path]     screenshot the browser (prints path)");
+                    eprintln!("  vmuxctl browser url                   print the current URL");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
             eprintln!("vmuxctl — terminal multiplexer control\n");
             eprintln!("usage:");
             eprintln!("  vmuxctl notify <message>   send a notification in the current terminal pane");
             eprintln!("  vmuxctl ping               check whether vmux is running");
             eprintln!("  vmuxctl list               list open terminal panes");
+            eprintln!("  vmuxctl browser <cmd>      control the browser pane");
             std::process::exit(1);
         }
     }

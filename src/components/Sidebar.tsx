@@ -347,11 +347,20 @@ function WorkspaceSelector() {
   );
 }
 
-/** Shows per-terminal metadata: git branch, notification ring */
-export function TerminalMetaBar({ terminalId }: { terminalId: string }) {
+interface TerminalMetaBarProps {
+  terminalId: string;
+  onClose?: () => void;
+  onDragStart?: (e: React.PointerEvent) => void;
+}
+
+/** Shows per-terminal metadata: git branch, notification ring, drag handle and close button. */
+export function TerminalMetaBar({ terminalId, onClose, onDragStart }: TerminalMetaBarProps) {
   const terminal = useStore(s => s.terminals[terminalId]);
   const clearNotification = useStore(s => s.clearNotification);
+  const draggingTerminalId = useStore(s => s.draggingTerminalId);
+  const dropPaneOnTarget = useStore(s => s.dropPaneOnTarget);
   const [git, setGit] = useState<GitMeta | null>(null);
+  const [dropHover, setDropHover] = useState<'left' | 'right' | 'top' | 'bottom' | null>(null);
 
   useEffect(() => {
     if (terminal?.working_dir) {
@@ -370,8 +379,20 @@ export function TerminalMetaBar({ terminalId }: { terminalId: string }) {
 
   if (!terminal) return null;
 
+  const isDragSource = draggingTerminalId === terminalId;
+  const isDropTarget = draggingTerminalId !== null && !isDragSource;
+
   return (
-    <div className={`terminal-meta-bar ${terminal.has_notification ? 'terminal-meta-notified' : ''}`}>
+    <div className={`terminal-meta-bar ${terminal.has_notification ? 'terminal-meta-notified' : ''} ${isDragSource ? 'terminal-meta-drag-source' : ''}`}>
+      {/* Drag handle */}
+      {onDragStart && (
+        <div
+          className="pane-drag-handle"
+          onPointerDown={onDragStart}
+          title="Drag to rearrange"
+        >⠿</div>
+      )}
+
       {terminal.has_notification && (
         <button
           className="notification-badge"
@@ -393,6 +414,36 @@ export function TerminalMetaBar({ terminalId }: { terminalId: string }) {
         <span className="working-dir" title={terminal.working_dir}>
           {terminal.working_dir.split(/[\\/]/).slice(-2).join('/')}
         </span>
+      )}
+
+      {/* Spacer pushes close button to right */}
+      <div style={{ flex: 1 }} />
+
+      {/* Close button */}
+      {onClose && (
+        <button
+          className="pane-close-btn"
+          onClick={onClose}
+          title="Close terminal"
+        >×</button>
+      )}
+
+      {/* Drop zones: left and right halves of the meta bar, shown during drag */}
+      {isDropTarget && (
+        <>
+          <div
+            className={`pane-drop-zone pane-drop-left ${dropHover === 'left' ? 'pane-drop-hover' : ''}`}
+            onPointerEnter={() => setDropHover('left')}
+            onPointerLeave={() => setDropHover(null)}
+            onPointerUp={() => { dropPaneOnTarget(terminalId, 'left'); setDropHover(null); }}
+          />
+          <div
+            className={`pane-drop-zone pane-drop-right ${dropHover === 'right' ? 'pane-drop-hover' : ''}`}
+            onPointerEnter={() => setDropHover('right')}
+            onPointerLeave={() => setDropHover(null)}
+            onPointerUp={() => { dropPaneOnTarget(terminalId, 'right'); setDropHover(null); }}
+          />
+        </>
       )}
     </div>
   );

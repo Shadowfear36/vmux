@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::terminal::TerminalManager;
 use crate::terminal::shell::{detect_shells, ShellProfile};
 use crate::terminal::agents::{detect_agents, AgentProfile};
@@ -19,7 +21,8 @@ pub struct AppState {
     pub shells: Vec<ShellProfile>,
     /// Detected AI agent CLIs — computed once at startup.
     pub agents: Vec<AgentProfile>,
-    pub browser: BrowserManager,
+    /// Per-pane browser state, keyed by browser pane UUID.
+    pub browsers: HashMap<String, BrowserManager>,
     /// Path to the SQLite database (for creating additional connections in async contexts).
     pub context_db_path: String,
     /// Embedding provider configuration.
@@ -41,7 +44,7 @@ impl AppState {
             main_hwnd,
             shells: detect_shells(),
             agents: detect_agents(),
-            browser: BrowserManager::new(),
+            browsers: HashMap::new(),
             context_db_path: db_path,
             embedding_config: EmbeddingConfig::default(),
             settings,

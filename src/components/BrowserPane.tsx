@@ -2,48 +2,47 @@ import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
-import { useStore } from '../store';
-import type { BrowserHistoryEntry } from '../types';
+import type { BrowserHistoryEntry, BrowserTabInfo, PaneBounds } from '../types';
 import './BrowserPane.css';
 
 interface Props {
+  /** Unique ID for this browser pane — keys the Rust-side BrowserManager. */
+  browserId: string;
   initialUrl?: string;
 }
 
-export function BrowserPane({ initialUrl }: Props) {
+export function BrowserPane({ browserId, initialUrl }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [urlInput, setUrlInput] = useState(initialUrl ?? 'https://example.com');
   const [browserReady, setBrowserReady] = useState(false);
   const [browserError, setBrowserError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<BrowserHistoryEntry[]>([]);
-
-  const {
-    openBrowser, openBrowserTab, closeBrowserTab, switchBrowserTab,
-    setBrowserBounds, browserNavigate, browserBack, browserForward,
-    browserReload, browserOpenDevtools, setBrowserUrl,
-    browserTabs, activeBrowserTabId, showBrowser,
-  } = useStore();
+  const [tabs, setTabs] = useState<BrowserTabInfo[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
 
   // ── Bounds ──────────────────────────────────────────────────────────────────
 
-  const getBounds = useCallback(() => {
+  const getBounds = useCallback((): PaneBounds | null => {
     const el = containerRef.current;
     if (!el) return null;
     const rect = el.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
+    // Inset 4 CSS px from the left so the native WebviewWindow doesn't
+    // cover the SplitDivider that sits at the pane's left edge.
+    const LEFT_INSET = 4;
     return {
-      x: Math.round(rect.left * dpr),
+      x: Math.round((rect.left + LEFT_INSET) * dpr),
       y: Math.round(rect.top * dpr),
-      width: Math.round(rect.width * dpr),
+      width: Math.round((rect.width - LEFT_INSET) * dpr),
       height: Math.round(rect.height * dpr),
     };
   }, []);
 
   const reportBounds = useCallback(() => {
     const b = getBounds();
-    if (b) setBrowserBounds(b);
-  }, [getBounds, setBrowserBounds]);
+    if (b) invoke('set_browser_bounds', { browserId, bounds: b }).catch(() => {});
+  }, [getBounds, browserId]);
 
   // ── Lifecycle ───────────────────────────────────────────────────────────────
 
@@ -55,10 +54,18 @@ export function BrowserPane({ initialUrl }: Props) {
       if (!bounds || bounds.width < 50 || bounds.height < 30) return;
       clearInterval(interval);
       try {
-        await openBrowser(bounds, initialUrl);
-        if (!cancelled) setBrowserReady(true);
+        const tabId = await invoke<string>('open_browser', {
+          browserId,
+          bounds,
+          url: initialUrl ?? null,
+        });
+        if (!cancelled) {
+          setTabs([{ id: tabId, url: initialUrl ?? 'https://example.com', title: '' }]);
+          setActiveTabId(tabId);
+          setBrowserReady(true);
+        }
       } catch (err) {
-        console.error('[vmux] openBrowser failed:', err);
+        console.error('[vmux] open_browser failed:', err);
         if (!cancelled) setBrowserError(String(err));
       }
     }, 150);
@@ -66,9 +73,9 @@ export function BrowserPane({ initialUrl }: Props) {
     return () => {
       cancelled = true;
       clearInterval(interval);
-      invoke('close_browser').catch(() => {});
+      invoke('close_browser', { browserId }).catch(() => {});
     };
-  }, []);
+  }, [browserId]);
 
   useEffect(() => {
     if (!browserReady) return;
@@ -79,16 +86,6 @@ export function BrowserPane({ initialUrl }: Props) {
     return () => { observer.disconnect(); clearInterval(poll); };
   }, [reportBounds, browserReady]);
 
-  // When showBrowser toggles on, immediately re-report bounds
-  // (Allotment keeps us mounted but resizes the pane)
-  useEffect(() => {
-    if (showBrowser && browserReady) {
-      // Small delay for Allotment to finish layout
-      const t = setTimeout(reportBounds, 50);
-      return () => clearTimeout(t);
-    }
-  }, [showBrowser, browserReady, reportBounds]);
-
   useEffect(() => {
     window.addEventListener('resize', reportBounds);
     let unlisten: (() => void) | null = null;
@@ -96,23 +93,38 @@ export function BrowserPane({ initialUrl }: Props) {
     return () => { window.removeEventListener('resize', reportBounds); unlisten?.(); };
   }, [reportBounds]);
 
+  // Route URL change events to this pane only
   useEffect(() => {
-    const unsub = listen<string>('browser:url-changed', ({ payload }) => {
-      setUrlInput(payload);
-      setBrowserUrl(payload);
+    const unsub = listen<{ browserId: string; url: string }>('browser:url-changed', ({ payload }) => {
+      if (payload.browserId !== browserId) return;
+      setUrlInput(payload.url);
+      setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, url: payload.url } : t));
     });
     return () => { unsub.then(f => f()); };
-  }, [setBrowserUrl]);
+  }, [browserId, activeTabId]);
+
+  // Listen for IPC-triggered navigation
+  useEffect(() => {
+    const unsub = listen<{ url: string }>('ipc:browser-navigate', ({ payload }) => {
+      handleNavigateToUrl(payload.url);
+    });
+    return () => { unsub.then(f => f()); };
+  }, [browserId]);
 
   // ── Handlers ────────────────────────────────────────────────────────────────
+
+  const handleNavigateToUrl = useCallback((url: string) => {
+    invoke('browser_navigate', { browserId, url }).catch(() => {});
+    setUrlInput(url);
+  }, [browserId]);
 
   const handleNavigate = useCallback(() => {
     let url = urlInput.trim();
     if (!url) return;
     if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(url)) url = 'https://' + url;
     setUrlInput(url);
-    browserNavigate(url);
-  }, [urlInput, browserNavigate]);
+    invoke('browser_navigate', { browserId, url }).catch(() => {});
+  }, [urlInput, browserId]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') { e.preventDefault(); handleNavigate(); }
@@ -122,20 +134,32 @@ export function BrowserPane({ initialUrl }: Props) {
   const handleNewTab = useCallback(async () => {
     const bounds = getBounds();
     if (!bounds) return;
-    await openBrowserTab(bounds, 'https://example.com');
-  }, [getBounds, openBrowserTab]);
+    const tabId = await invoke<string>('open_browser_tab', {
+      browserId, bounds, url: 'https://example.com',
+    });
+    setTabs(prev => [...prev, { id: tabId, url: 'https://example.com', title: '' }]);
+    setActiveTabId(tabId);
+    setUrlInput('https://example.com');
+  }, [getBounds, browserId]);
 
   const handleCloseTab = useCallback(async (tabId: string) => {
     const bounds = getBounds() ?? { x: 0, y: 0, width: 800, height: 600 };
-    await closeBrowserTab(tabId, bounds);
-  }, [getBounds, closeBrowserTab]);
+    const remaining = await invoke<BrowserTabInfo[]>('close_browser_tab', { browserId, tabId, bounds });
+    setTabs(remaining);
+    if (remaining.length > 0) {
+      const next = remaining[remaining.length - 1];
+      setActiveTabId(next.id);
+      setUrlInput(next.url);
+    }
+  }, [getBounds, browserId]);
 
   const handleSwitchTab = useCallback(async (tabId: string) => {
     const bounds = getBounds() ?? { x: 0, y: 0, width: 800, height: 600 };
-    await switchBrowserTab(tabId, bounds);
-    const tab = useStore.getState().browserTabs.find(t => t.id === tabId);
+    await invoke('switch_browser_tab', { browserId, tabId, bounds });
+    setActiveTabId(tabId);
+    const tab = tabs.find(t => t.id === tabId);
     if (tab) setUrlInput(tab.url);
-  }, [getBounds, switchBrowserTab]);
+  }, [getBounds, browserId, tabs]);
 
   const toggleHistory = useCallback(async () => {
     if (!showHistory) {
@@ -158,18 +182,18 @@ export function BrowserPane({ initialUrl }: Props) {
   return (
     <div className="browser-pane-wrapper">
       {/* Tab bar */}
-      {browserTabs.length > 0 && (
+      {tabs.length > 0 && (
         <div className="browser-tabbar">
-          {browserTabs.map(tab => (
+          {tabs.map(tab => (
             <div
               key={tab.id}
-              className={`browser-tab ${tab.id === activeBrowserTabId ? 'browser-tab-active' : ''}`}
+              className={`browser-tab ${tab.id === activeTabId ? 'browser-tab-active' : ''}`}
               onClick={() => handleSwitchTab(tab.id)}
             >
               <span className="browser-tab-url">
                 {tab.title || (() => { try { return new URL(tab.url).hostname; } catch { return tab.url; } })()}
               </span>
-              {browserTabs.length > 1 && (
+              {tabs.length > 1 && (
                 <button className="browser-tab-close" onClick={e => { e.stopPropagation(); handleCloseTab(tab.id); }}>x</button>
               )}
             </div>
@@ -180,9 +204,9 @@ export function BrowserPane({ initialUrl }: Props) {
 
       {/* URL toolbar */}
       <div className="browser-toolbar">
-        <button className="browser-nav-btn" onClick={browserBack} title="Back">&#x2190;</button>
-        <button className="browser-nav-btn" onClick={browserForward} title="Forward">&#x2192;</button>
-        <button className="browser-nav-btn" onClick={browserReload} title="Reload">&#x21BA;</button>
+        <button className="browser-nav-btn" onClick={() => invoke('browser_back', { browserId })} title="Back">&#x2190;</button>
+        <button className="browser-nav-btn" onClick={() => invoke('browser_forward', { browserId })} title="Forward">&#x2192;</button>
+        <button className="browser-nav-btn" onClick={() => invoke('browser_reload', { browserId })} title="Reload">&#x21BA;</button>
         <input
           className="browser-url-input"
           type="text"
@@ -193,7 +217,7 @@ export function BrowserPane({ initialUrl }: Props) {
         />
         <button className="browser-go-btn" onClick={handleNavigate}>Go</button>
         <button className="browser-nav-btn" onClick={toggleHistory} title="History">&#x1F553;</button>
-        <button className="browser-nav-btn browser-devtools-btn" onClick={browserOpenDevtools} title="DevTools">Dev</button>
+        <button className="browser-nav-btn browser-devtools-btn" onClick={() => invoke('browser_open_devtools', { browserId })} title="DevTools">Dev</button>
       </div>
 
       {/* History dropdown */}
@@ -209,8 +233,7 @@ export function BrowserPane({ initialUrl }: Props) {
           {history.length === 0 && <div className="browser-history-empty">No history yet</div>}
           {history.map(h => (
             <div key={h.id} className="browser-history-item" onClick={() => {
-              browserNavigate(h.url);
-              setUrlInput(h.url);
+              handleNavigateToUrl(h.url);
               setShowHistory(false);
             }}>
               <span className="browser-history-url">{h.title ?? h.url}</span>
@@ -222,7 +245,7 @@ export function BrowserPane({ initialUrl }: Props) {
         </div>
       )}
 
-      {/* Transparent surface — WebView2 renders here */}
+      {/* Transparent surface — WebView2 native window renders here */}
       <div ref={containerRef} className="browser-pane-surface" />
     </div>
   );

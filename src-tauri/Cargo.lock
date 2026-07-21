@@ -5877,6 +5877,7 @@ dependencies = [
  "git2",
  "log",
  "parking_lot",
+ "png",
  "portable-pty",
  "raw-window-handle",
  "regex",

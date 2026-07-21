@@ -36,3 +36,8 @@
   opacity: 0;
   pointer-events: none; /* clicks go through to parent for focusSurface */
 }
+
+/* Dim the pane being dragged so the user can see it's the source */
+.terminal-pane-drag-source {
+  opacity: 0.55;
+}

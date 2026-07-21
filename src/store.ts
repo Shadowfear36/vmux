@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { ask } from '@tauri-apps/plugin-dialog';
 import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry, BrowserTabInfo, WorktreeInfo, Settings } from './types';
-import { removeNode, splitNode, type SplitNode } from './components/SplitTree';
+import { removeNode, splitNode, splitNodeWith, insertAdjacent, makeLeaf, makeBrowserLeaf, type SplitNode, type SplitLeaf } from './components/SplitTree';
 
 const CLAUDE_HOOKS_PROMPTED_KEY = 'vmux-claude-hooks-prompted';
 
@@ -67,10 +67,17 @@ interface AppStore {
   setSplitTree: (tabId: string, tree: import('./components/SplitTree').SplitNode) => void;
   splitFocusedPane: (direction: 'horizontal' | 'vertical') => Promise<void>;
   splitFocusedPaneWith: (kind: 'shell' | 'agent', id: string, direction: 'horizontal' | 'vertical') => Promise<void>;
+  splitFocusedPaneWithBrowser: (direction: 'horizontal' | 'vertical') => void;
   createWorktreeTab: (branch: string) => Promise<void>;
   listWorktreesForActiveRepo: () => Promise<{ repoPath: string | null; worktrees: WorktreeInfo[] }>;
   deleteWorktree: (repoPath: string, branch: string) => Promise<void>;
   saveWorkspaceState: () => Promise<void>;
+
+  // Pane drag-to-rearrange
+  draggingTerminalId: string | null;
+  startPaneDrag: (terminalId: string) => void;
+  endPaneDrag: () => void;
+  dropPaneOnTarget: (targetId: string, side: 'left' | 'right' | 'top' | 'bottom') => void;
 
   // Actions
   loadWorkspaces: () => Promise<void>;
@@ -190,7 +197,13 @@ export const useStore = create<AppStore>((set, get) => ({
       ?? (state.focusedTerminalId ? state.terminals[state.focusedTerminalId]?.working_dir : null)
       ?? null;
 
-    const continueSession = agentId === 'claude';
+    // Resume the last tracked session for this directory; fall back to --continue
+    // which asks Claude to resume its own most-recent session in that CWD.
+    const savedSessionId = (agentId === 'claude' && effectiveDir)
+      ? (state.claudeSessionsByDir[effectiveDir] ?? null)
+      : null;
+    const resumeSession = savedSessionId;
+    const continueSession = agentId === 'claude' && !savedSessionId;
 
     await ensureClaudeHooksConsent(agentId);
 
@@ -198,7 +211,7 @@ export const useStore = create<AppStore>((set, get) => ({
       agentId,
       workingDir: effectiveDir,
       sessionName: agentId === 'claude' ? sessionName : null,
-      resumeSession: null,
+      resumeSession,
       continueSession,
     });
     set(s => ({ terminals: { ...s.terminals, [info.id]: info } }));
@@ -240,6 +253,7 @@ export const useStore = create<AppStore>((set, get) => ({
   showFileTree: false,
   showGitDiff: false,
   splitTrees: {},
+  draggingTerminalId: null,
   claudeSessionsByDir: {},
 
   loadWorkspaces: async () => {
@@ -450,8 +464,11 @@ export const useStore = create<AppStore>((set, get) => ({
   createTerminalInTab: async (workspaceId, tabId, workingDir, shellId) => {
     const state = get();
     const ws = state.workspaces.find(w => w.id === workspaceId);
-    // Directory priority: explicit > workspace directory > null (backend defaults to USERPROFILE)
-    const effectiveDir = workingDir ?? ws?.directory ?? null;
+    // Directory priority: explicit > focused pane CWD > workspace directory > null
+    const effectiveDir = workingDir
+      ?? (state.focusedTerminalId ? state.terminals[state.focusedTerminalId]?.working_dir : null)
+      ?? ws?.directory
+      ?? null;
     const effectiveShellId = shellId ?? state.defaultShellId ?? null;
     const info: TerminalInfo = await invoke('create_terminal', {
       workingDir: effectiveDir,
@@ -506,8 +523,21 @@ export const useStore = create<AppStore>((set, get) => ({
   closeTerminal: async (terminalId) => {
     await invoke('close_terminal', { terminalId });
 
-    // Find the pane to remove so we can persist the removal to SQLite
+    // Find a sibling terminal to focus BEFORE mutating state
     const state = get();
+    let nextFocusedId: string | null = null;
+    if (state.focusedTerminalId === terminalId) {
+      const activeTab = state.workspaces
+        .find(w => w.id === state.activeWorkspaceId)
+        ?.tabs.find(t => t.id === state.activeTabId);
+      const siblings = activeTab?.panes.filter(p =>
+        p.kind.type === 'terminal' && p.kind.terminal_id !== terminalId
+      ) ?? [];
+      const next = siblings[0];
+      if (next?.kind.type === 'terminal') nextFocusedId = next.kind.terminal_id;
+    }
+
+    // Find the pane to remove so we can persist the removal to SQLite
     for (const ws of state.workspaces) {
       for (const tab of ws.tabs) {
         const pane = tab.panes.find(p =>
@@ -543,8 +573,15 @@ export const useStore = create<AppStore>((set, get) => ({
         }
       }
 
-      return { terminals: rest, workspaces, splitTrees };
+      return {
+        terminals: rest,
+        workspaces,
+        splitTrees,
+        focusedTerminalId: s.focusedTerminalId === terminalId ? nextFocusedId : s.focusedTerminalId,
+      };
     });
+
+    if (nextFocusedId) get().focusTerminal(nextFocusedId);
   },
 
   setNotification: (terminalId, message) => {
@@ -879,6 +916,24 @@ export const useStore = create<AppStore>((set, get) => ({
     }, 1000);
   },
 
+  startPaneDrag: (terminalId) => set({ draggingTerminalId: terminalId }),
+
+  endPaneDrag: () => set({ draggingTerminalId: null }),
+
+  dropPaneOnTarget: (targetId, side) => {
+    const { activeTabId, splitTrees, draggingTerminalId } = get();
+    if (!draggingTerminalId || !activeTabId) { set({ draggingTerminalId: null }); return; }
+    if (draggingTerminalId === targetId) { set({ draggingTerminalId: null }); return; }
+    const tree = splitTrees[activeTabId];
+    if (!tree) { set({ draggingTerminalId: null }); return; }
+    const sourceId = draggingTerminalId;
+    const withoutSource = removeNode(tree, sourceId);
+    if (!withoutSource) { set({ draggingTerminalId: null }); return; }
+    const newTree = insertAdjacent(withoutSource, targetId, makeLeaf(sourceId), side);
+    set(s => ({ splitTrees: { ...s.splitTrees, [activeTabId]: newTree }, draggingTerminalId: null }));
+    get().saveWorkspaceState();
+  },
+
   saveWorkspaceState: async () => {
     const state = get();
     const ws = state.workspaces.find(w => w.id === state.activeWorkspaceId);
@@ -962,12 +1017,15 @@ export const useStore = create<AppStore>((set, get) => ({
     let info: TerminalInfo;
     if (kind === 'agent') {
       await ensureClaudeHooksConsent(id);
+      const savedSessionId = (id === 'claude' && focusedDir)
+        ? (state.claudeSessionsByDir[focusedDir] ?? null)
+        : null;
       info = await invoke('create_agent_terminal', {
         agentId: id,
         workingDir: focusedDir,
         sessionName: `${ws?.name ?? 'vmux'}-${id}`,
-        resumeSession: null,
-        continueSession: id === 'claude',
+        resumeSession: savedSessionId,
+        continueSession: id === 'claude' && !savedSessionId,
       });
     } else {
       info = await invoke('create_terminal', {
@@ -994,6 +1052,23 @@ export const useStore = create<AppStore>((set, get) => ({
         ? { ...s.splitTrees, [activeTabId]: splitNode(tree, focusedTerminalId, info.id, direction) }
         : s.splitTrees;
       return { workspaces, splitTrees, focusedTerminalId: info.id };
+    });
+    get().saveWorkspaceState();
+  },
+
+  splitFocusedPaneWithBrowser: (direction) => {
+    const { focusedTerminalId, activeTabId } = get();
+    if (!activeTabId) return;
+    const browserId = crypto.randomUUID();
+    const newLeaf = makeBrowserLeaf(browserId);
+    set(s => {
+      const tree = s.splitTrees[activeTabId];
+      if (!tree) return s;
+      const targetId = focusedTerminalId ?? null;
+      const newTree = targetId
+        ? splitNodeWith(tree, targetId, newLeaf, direction)
+        : { type: 'split' as const, direction, children: [tree, newLeaf] as [SplitNode, SplitLeaf], ratio: 0.5 };
+      return { splitTrees: { ...s.splitTrees, [activeTabId]: newTree } };
     });
     get().saveWorkspaceState();
   },
@@ -1057,9 +1132,11 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 }));
 
-/** Recursively remap terminal IDs in a split tree using an old→new ID mapping. */
+/** Recursively remap terminal IDs in a split tree using an old→new ID mapping.
+ *  Browser leaves are left untouched. */
 function remapTerminalIds(node: SplitNode, idMap: Record<string, string>): SplitNode {
   if (node.type === 'leaf') {
+    if (node.paneKind === 'browser') return node;
     return { ...node, terminalId: idMap[node.terminalId] ?? node.terminalId };
   }
   return {

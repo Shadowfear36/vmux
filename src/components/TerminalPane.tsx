@@ -23,6 +23,10 @@ export function TerminalPane({ terminalId, isFocused, onFocus }: Props) {
   const setTerminalBounds = useStore(s => s.setTerminalBounds);
   const showTerminal = useStore(s => s.showTerminal);
   const hideTerminal = useStore(s => s.hideTerminal);
+  const closeTerminal = useStore(s => s.closeTerminal);
+  const startPaneDrag = useStore(s => s.startPaneDrag);
+  const endPaneDrag = useStore(s => s.endPaneDrag);
+  const draggingTerminalId = useStore(s => s.draggingTerminalId);
 
   // ── Focus tracking ─────────────────────────────────────────────────────────
   // The HWND takes keyboard focus natively. These events just keep the
@@ -138,9 +142,25 @@ export function TerminalPane({ terminalId, isFocused, onFocus }: Props) {
     };
   }, [reportBounds]);
 
+  const handleDragStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    startPaneDrag(terminalId);
+    const handlePointerUp = () => {
+      endPaneDrag();
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+    window.addEventListener('pointerup', handlePointerUp);
+  }, [terminalId, startPaneDrag, endPaneDrag]);
+
+  const isDragSource = draggingTerminalId === terminalId;
+
   return (
-    <div className={`terminal-pane-wrapper ${isFocused ? 'terminal-pane-focused' : ''}`}>
-      <TerminalMetaBar terminalId={terminalId} />
+    <div className={`terminal-pane-wrapper ${isFocused ? 'terminal-pane-focused' : ''} ${isDragSource ? 'terminal-pane-drag-source' : ''}`}>
+      <TerminalMetaBar
+        terminalId={terminalId}
+        onClose={() => closeTerminal(terminalId)}
+        onDragStart={handleDragStart}
+      />
       <div
         ref={containerRef}
         className="terminal-pane-surface"

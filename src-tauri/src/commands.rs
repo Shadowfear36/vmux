@@ -367,8 +367,10 @@ pub fn update_layout(state: State<'_, Mutex<AppState>>, workspace_id: String, ta
 }
 
 /// Save the full workspace state to SQLite (pane CWDs, layout, etc).
+/// Declared async so Tauri v2 dispatches it on the tokio thread pool instead
+/// of the WebView2 main thread, keeping the Win32 message pump free.
 #[tauri::command]
-pub fn save_workspace_state(
+pub async fn save_workspace_state(
     state: State<'_, Mutex<AppState>>,
     workspace_id: String,
     workspace_json: String,
@@ -608,15 +610,19 @@ pub fn delete_context(state: State<'_, Mutex<AppState>>, id: String) -> Result<(
 
 // ─── Browser pane commands ────────────────────────────────────────────────────
 
-/// Helper: create a WebviewWindow for the given URL at the given bounds.
+/// Helper: create a WebviewWindow for the given browser pane.
+/// `browser_id` becomes part of the Tauri window label and is included in
+/// `browser:url-changed` events so the frontend can route to the right pane.
 fn create_browser_window(
     app: &AppHandle,
     main_hwnd: isize,
+    browser_id: &str,
     bounds: &PaneBounds,
     url: &str,
 ) -> Result<tauri::WebviewWindow, String> {
     let url_parsed = tauri::Url::parse(url).map_err(|e| e.to_string())?;
-    let label = format!("browser-{}", uuid::Uuid::new_v4());
+    // Each pane gets a deterministic label so we can look it up later.
+    let label = format!("browser-{}", browser_id);
 
     let (screen_x, screen_y) = unsafe {
         use windows::Win32::Foundation::*;
@@ -628,7 +634,8 @@ fn create_browser_window(
     };
 
     let app_nav = app.clone();
-    let win = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::External(url_parsed))
+    let bid = browser_id.to_string();
+    let win = tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::External(url_parsed))
         .title("vmux browser")
         .inner_size(bounds.width as f64, bounds.height as f64)
         .position(screen_x as f64, screen_y as f64)
@@ -638,7 +645,10 @@ fn create_browser_window(
         .visible(true)
         .focused(false)
         .on_navigation(move |nav_url| {
-            let _ = app_nav.emit("browser:url-changed", nav_url.to_string());
+            let _ = app_nav.emit("browser:url-changed", serde_json::json!({
+                "browserId": bid,
+                "url": nav_url.to_string(),
+            }));
             true
         })
         .build()
@@ -661,126 +671,148 @@ fn create_browser_window(
     Ok(win)
 }
 
-/// Open the browser pane with a new tab.
+/// Open (or reopen) a browser pane identified by `browser_id`.
 #[tauri::command]
 pub async fn open_browser(
     app: AppHandle,
     state: State<'_, Mutex<AppState>>,
+    browser_id: String,
     bounds: PaneBounds,
     url: Option<String>,
 ) -> Result<String, String> {
     let url_str = url.unwrap_or_else(|| "https://example.com".to_string());
 
-    // Destroy existing window
+    // Destroy any existing window for this pane
     {
         let mut s = state.lock().map_err(|e| e.to_string())?;
-        if let Some(w) = s.browser.take_window() { let _ = w.destroy(); }
+        if let Some(mgr) = s.browsers.get_mut(&browser_id) {
+            if let Some(w) = mgr.take_window() { let _ = w.destroy(); }
+        }
     }
 
     let main_hwnd = state.lock().map_err(|e| e.to_string())?.main_hwnd;
-    let win = create_browser_window(&app, main_hwnd, &bounds, &url_str)?;
+    let win = create_browser_window(&app, main_hwnd, &browser_id, &bounds, &url_str)?;
 
     let mut s = state.lock().map_err(|e| e.to_string())?;
-    let tab_id = s.browser.add_tab(&url_str);
-    s.browser.set_active(&tab_id);
-    s.browser.window = Some(win);
-    // Record to history
+    let mgr = s.browsers.entry(browser_id).or_insert_with(crate::browser::BrowserManager::new);
+    let tab_id = mgr.add_tab(&url_str);
+    mgr.set_active(&tab_id);
+    mgr.window = Some(win);
     let _ = s.context.add_history(&url_str, None);
     Ok(tab_id)
 }
 
-/// Open a new tab (called from frontend tab bar "+" button).
+/// Open a new browser tab within an existing pane.
 #[tauri::command]
 pub async fn open_browser_tab(
     app: AppHandle,
     state: State<'_, Mutex<AppState>>,
+    browser_id: String,
     bounds: PaneBounds,
     url: Option<String>,
 ) -> Result<String, String> {
     let url_str = url.unwrap_or_else(|| "https://example.com".to_string());
 
-    // Destroy current window (will recreate for new tab)
     {
         let mut s = state.lock().map_err(|e| e.to_string())?;
-        if let Some(w) = s.browser.take_window() { let _ = w.destroy(); }
+        if let Some(mgr) = s.browsers.get_mut(&browser_id) {
+            if let Some(w) = mgr.take_window() { let _ = w.destroy(); }
+        }
     }
 
     let main_hwnd = state.lock().map_err(|e| e.to_string())?.main_hwnd;
-    let win = create_browser_window(&app, main_hwnd, &bounds, &url_str)?;
+    let win = create_browser_window(&app, main_hwnd, &browser_id, &bounds, &url_str)?;
 
     let mut s = state.lock().map_err(|e| e.to_string())?;
-    let tab_id = s.browser.add_tab(&url_str);
-    s.browser.set_active(&tab_id);
-    s.browser.window = Some(win);
+    let mgr = s.browsers.entry(browser_id).or_insert_with(crate::browser::BrowserManager::new);
+    let tab_id = mgr.add_tab(&url_str);
+    mgr.set_active(&tab_id);
+    mgr.window = Some(win);
     let _ = s.context.add_history(&url_str, None);
     Ok(tab_id)
 }
 
-/// Close a tab. If it was active, switch to another.
+/// Close a browser tab. If the tab was active, recreate the window for the next tab.
 #[tauri::command]
 pub async fn close_browser_tab(
     app: AppHandle,
     state: State<'_, Mutex<AppState>>,
+    browser_id: String,
     tab_id: String,
     bounds: PaneBounds,
 ) -> Result<Vec<crate::browser::BrowserTabInfo>, String> {
     let (was_active, next_url, main_hwnd) = {
         let mut s = state.lock().map_err(|e| e.to_string())?;
-        let was_active = s.browser.close_tab(&tab_id);
+        let mgr = s.browsers.get_mut(&browser_id).ok_or("browser not found")?;
+        let was_active = mgr.close_tab(&tab_id);
         if was_active {
-            if let Some(w) = s.browser.take_window() { let _ = w.destroy(); }
+            if let Some(w) = mgr.take_window() { let _ = w.destroy(); }
         }
-        let next_url = s.browser.active_url().map(|u| u.to_string());
+        let next_url = mgr.active_url().map(|u| u.to_string());
         (was_active, next_url, s.main_hwnd)
     };
 
-    // Recreate window for the new active tab
     if was_active {
         if let Some(url) = next_url {
-            let win = create_browser_window(&app, main_hwnd, &bounds, &url)?;
-            state.lock().map_err(|e| e.to_string())?.browser.window = Some(win);
+            let win = create_browser_window(&app, main_hwnd, &browser_id, &bounds, &url)?;
+            if let Some(mgr) = state.lock().map_err(|e| e.to_string())?.browsers.get_mut(&browser_id) {
+                mgr.window = Some(win);
+            }
         }
     }
 
-    Ok(state.lock().map_err(|e| e.to_string())?.browser.list_tabs())
+    Ok(state.lock().map_err(|e| e.to_string())?
+        .browsers.get(&browser_id)
+        .map(|m| m.list_tabs())
+        .unwrap_or_default())
 }
 
-/// Switch to an existing tab. Destroys current window, creates new for target tab.
+/// Switch to a different tab within a browser pane.
 #[tauri::command]
 pub async fn switch_browser_tab(
     app: AppHandle,
     state: State<'_, Mutex<AppState>>,
+    browser_id: String,
     tab_id: String,
     bounds: PaneBounds,
 ) -> Result<(), String> {
     let (url, main_hwnd) = {
         let mut s = state.lock().map_err(|e| e.to_string())?;
-        // Save current tab URL from any navigation
-        if let Some(w) = s.browser.take_window() { let _ = w.destroy(); }
-        s.browser.set_active(&tab_id);
-        let url = s.browser.active_url().map(|u| u.to_string())
-            .ok_or("tab not found")?;
+        let mgr = s.browsers.get_mut(&browser_id).ok_or("browser not found")?;
+        if let Some(w) = mgr.take_window() { let _ = w.destroy(); }
+        mgr.set_active(&tab_id);
+        let url = mgr.active_url().map(|u| u.to_string()).ok_or("tab not found")?;
         (url, s.main_hwnd)
     };
 
-    let win = create_browser_window(&app, main_hwnd, &bounds, &url)?;
-    state.lock().map_err(|e| e.to_string())?.browser.window = Some(win);
+    let win = create_browser_window(&app, main_hwnd, &browser_id, &bounds, &url)?;
+    if let Some(mgr) = state.lock().map_err(|e| e.to_string())?.browsers.get_mut(&browser_id) {
+        mgr.window = Some(win);
+    }
     Ok(())
 }
 
 #[tauri::command]
-pub fn list_browser_tabs(state: State<'_, Mutex<AppState>>) -> Result<Vec<crate::browser::BrowserTabInfo>, String> {
-    Ok(state.lock().map_err(|e| e.to_string())?.browser.list_tabs())
+pub fn list_browser_tabs(state: State<'_, Mutex<AppState>>, browser_id: String) -> Result<Vec<crate::browser::BrowserTabInfo>, String> {
+    Ok(state.lock().map_err(|e| e.to_string())?
+        .browsers.get(&browser_id)
+        .map(|m| m.list_tabs())
+        .unwrap_or_default())
 }
 
 #[tauri::command]
-pub fn set_browser_bounds(state: State<'_, Mutex<AppState>>, bounds: PaneBounds) -> Result<(), String> {
+pub async fn set_browser_bounds(
+    state: State<'_, Mutex<AppState>>,
+    browser_id: String,
+    bounds: PaneBounds,
+) -> Result<(), String> {
     let s = state.lock().map_err(|e| e.to_string())?;
-    if let Some(win) = &s.browser.window {
+    let (main_hwnd, win) = (s.main_hwnd, s.browsers.get(&browser_id).and_then(|m| m.window.as_ref()).cloned());
+    if let Some(win) = win {
         let (sx, sy) = unsafe {
             use windows::Win32::Foundation::*;
             use windows::Win32::Graphics::Gdi::ClientToScreen;
-            let hwnd = HWND(s.main_hwnd as *mut _);
+            let hwnd = HWND(main_hwnd as *mut _);
             let mut pt = POINT { x: bounds.x, y: bounds.y };
             let _ = ClientToScreen(hwnd, &mut pt);
             (pt.x, pt.y)
@@ -792,46 +824,57 @@ pub fn set_browser_bounds(state: State<'_, Mutex<AppState>>, bounds: PaneBounds)
 }
 
 #[tauri::command]
-pub fn browser_navigate(state: State<'_, Mutex<AppState>>, url: String) -> Result<(), String> {
+pub async fn browser_navigate(
+    state: State<'_, Mutex<AppState>>,
+    browser_id: String,
+    url: String,
+) -> Result<(), String> {
     let mut s = state.lock().map_err(|e| e.to_string())?;
-    if let Some(active_id) = s.browser.active_tab_id.clone() {
-        s.browser.update_url(&active_id, &url);
-    }
     let _ = s.context.add_history(&url, None);
-    if let Some(win) = &s.browser.window {
-        let parsed = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
-        win.navigate(parsed).map_err(|e| e.to_string())?;
+    if let Some(mgr) = s.browsers.get_mut(&browser_id) {
+        if let Some(active_id) = mgr.active_tab_id.clone() {
+            mgr.update_url(&active_id, &url);
+        }
+        if let Some(win) = &mgr.window {
+            let parsed = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+            win.navigate(parsed).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn browser_back(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    if let Some(win) = &state.lock().map_err(|e| e.to_string())?.browser.window {
+pub async fn browser_back(state: State<'_, Mutex<AppState>>, browser_id: String) -> Result<(), String> {
+    if let Some(win) = state.lock().map_err(|e| e.to_string())?.browsers.get(&browser_id).and_then(|m| m.window.as_ref()).cloned() {
         win.eval("window.history.back()").map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn browser_forward(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    if let Some(win) = &state.lock().map_err(|e| e.to_string())?.browser.window {
+pub async fn browser_forward(state: State<'_, Mutex<AppState>>, browser_id: String) -> Result<(), String> {
+    if let Some(win) = state.lock().map_err(|e| e.to_string())?.browsers.get(&browser_id).and_then(|m| m.window.as_ref()).cloned() {
         win.eval("window.history.forward()").map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn browser_reload(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    if let Some(win) = &state.lock().map_err(|e| e.to_string())?.browser.window {
+pub async fn browser_reload(state: State<'_, Mutex<AppState>>, browser_id: String) -> Result<(), String> {
+    if let Some(win) = state.lock().map_err(|e| e.to_string())?.browsers.get(&browser_id).and_then(|m| m.window.as_ref()).cloned() {
         win.eval("location.reload()").map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn browser_evaluate(state: State<'_, Mutex<AppState>>, js: String, call_id: String) -> Result<(), String> {
-    if let Some(win) = &state.lock().map_err(|e| e.to_string())?.browser.window {
+pub async fn browser_evaluate(
+    state: State<'_, Mutex<AppState>>,
+    browser_id: String,
+    js: String,
+    call_id: String,
+) -> Result<(), String> {
+    if let Some(win) = state.lock().map_err(|e| e.to_string())?.browsers.get(&browser_id).and_then(|m| m.window.as_ref()).cloned() {
         let script = format!(
             r#"(async () => {{ try {{ const __r = await (async () => {{ {js} }})(); window.__TAURI_INTERNALS__?.emit('browser:eval-result', {{ id: '{call_id}', ok: true, value: JSON.stringify(__r) }}); }} catch(e) {{ window.__TAURI_INTERNALS__?.emit('browser:eval-result', {{ id: '{call_id}', ok: false, value: e.message }}); }} }})()"#
         );
@@ -841,8 +884,12 @@ pub async fn browser_evaluate(state: State<'_, Mutex<AppState>>, js: String, cal
 }
 
 #[tauri::command]
-pub async fn browser_get_source(state: State<'_, Mutex<AppState>>, call_id: String) -> Result<(), String> {
-    if let Some(win) = &state.lock().map_err(|e| e.to_string())?.browser.window {
+pub async fn browser_get_source(
+    state: State<'_, Mutex<AppState>>,
+    browser_id: String,
+    call_id: String,
+) -> Result<(), String> {
+    if let Some(win) = state.lock().map_err(|e| e.to_string())?.browsers.get(&browser_id).and_then(|m| m.window.as_ref()).cloned() {
         win.eval(&format!(r#"window.__TAURI_INTERNALS__?.emit('browser:source', {{ id: '{call_id}', html: document.documentElement.outerHTML }})"#))
             .map_err(|e| e.to_string())?;
     }
@@ -850,36 +897,80 @@ pub async fn browser_get_source(state: State<'_, Mutex<AppState>>, call_id: Stri
 }
 
 #[tauri::command]
-pub fn show_browser(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    if let Some(win) = &state.lock().map_err(|e| e.to_string())?.browser.window {
+pub async fn show_browser(state: State<'_, Mutex<AppState>>, browser_id: String) -> Result<(), String> {
+    if let Some(win) = state.lock().map_err(|e| e.to_string())?.browsers.get(&browser_id).and_then(|m| m.window.as_ref()).cloned() {
         win.show().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn hide_browser(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    if let Some(win) = &state.lock().map_err(|e| e.to_string())?.browser.window {
+pub async fn hide_browser(state: State<'_, Mutex<AppState>>, browser_id: String) -> Result<(), String> {
+    if let Some(win) = state.lock().map_err(|e| e.to_string())?.browsers.get(&browser_id).and_then(|m| m.window.as_ref()).cloned() {
         let _ = win.hide();
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn close_browser(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
+pub fn close_browser(state: State<'_, Mutex<AppState>>, browser_id: String) -> Result<(), String> {
     let mut s = state.lock().map_err(|e| e.to_string())?;
-    if let Some(w) = s.browser.take_window() { let _ = w.destroy(); }
-    s.browser.tabs.clear();
-    s.browser.active_tab_id = None;
+    if let Some(mgr) = s.browsers.get_mut(&browser_id) {
+        if let Some(w) = mgr.take_window() { let _ = w.destroy(); }
+    }
+    s.browsers.remove(&browser_id);
     Ok(())
 }
 
 #[tauri::command]
-pub fn browser_open_devtools(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    if let Some(win) = &state.lock().map_err(|e| e.to_string())?.browser.window {
+pub fn browser_open_devtools(state: State<'_, Mutex<AppState>>, browser_id: String) -> Result<(), String> {
+    if let Some(win) = state.lock().map_err(|e| e.to_string())?.browsers.get(&browser_id).and_then(|m| m.window.as_ref()).cloned() {
         win.open_devtools();
     }
     Ok(())
+}
+
+/// Return the current URL of the active tab in a browser pane.
+#[tauri::command]
+pub fn get_browser_url(state: State<'_, Mutex<AppState>>, browser_id: String) -> Result<String, String> {
+    Ok(state.lock().map_err(|e| e.to_string())?
+        .browsers.get(&browser_id)
+        .and_then(|m| m.active_url().map(|u| u.to_string()))
+        .unwrap_or_default())
+}
+
+/// Get the URL of the first available browser pane (used by vmuxctl).
+#[tauri::command]
+pub fn get_any_browser_url(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
+    Ok(state.lock().map_err(|e| e.to_string())?
+        .browsers.values()
+        .find_map(|m| m.active_url().map(|u| u.to_string()))
+        .unwrap_or_default())
+}
+
+/// Capture a screenshot of a browser pane and save it as PNG.
+/// Returns the file path of the saved screenshot.
+///
+/// NOTE: Requires Win32 PrintWindow + GDI capture; not yet wired up.
+#[tauri::command]
+pub fn screenshot_browser(
+    _app: AppHandle,
+    state: State<'_, Mutex<AppState>>,
+    browser_id: Option<String>,
+    _output_path: Option<String>,
+) -> Result<String, String> {
+    let _win = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        if let Some(id) = &browser_id {
+            s.browsers.get(id).and_then(|m| m.window.clone())
+        } else {
+            s.browsers.values().find_map(|m| m.window.clone())
+        }
+    }.ok_or_else(|| "no browser pane open".to_string())?;
+
+    // TODO: capture via Win32 PrintWindow API.
+    // Tauri 2.10.3 / wry 0.54.4 do not expose capture_image() yet.
+    Err("Screenshot not yet supported in this build (requires Win32 PrintWindow implementation)".to_string())
 }
 
 #[tauri::command]
@@ -934,8 +1025,10 @@ pub fn update_settings(
 // ─── Terminal scrollback persistence ─────────────────────────────────────────
 
 /// Save a terminal's capture buffer to SQLite, keyed by pane_id.
+/// Declared async so Tauri v2 dispatches it on the tokio thread pool instead
+/// of the WebView2 main thread, keeping the Win32 message pump free.
 #[tauri::command]
-pub fn save_terminal_scrollback(
+pub async fn save_terminal_scrollback(
     state: State<'_, Mutex<AppState>>,
     pane_id: String,
     terminal_id: String,
@@ -962,7 +1055,7 @@ pub fn save_terminal_scrollback(
 
 /// Replay saved scrollback into a terminal's VT grid (called after restore).
 #[tauri::command]
-pub fn restore_terminal_scrollback(
+pub async fn restore_terminal_scrollback(
     state: State<'_, Mutex<AppState>>,
     pane_id: String,
     terminal_id: String,

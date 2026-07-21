@@ -35,13 +35,13 @@
 .split-divider:hover { background: #7aa2f7; }
 
 .split-divider-h {
-  width: 4px;
+  width: 6px;
   height: 100%;
   cursor: col-resize;
 }
 
 .split-divider-v {
-  height: 4px;
+  height: 6px;
   width: 100%;
   cursor: row-resize;
 }

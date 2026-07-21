@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../store';
 import type { Tab } from '../types';
-import { SplitTreeView, SplitNode, makeLeaf, splitNode, removeNode, getTerminalIds } from './SplitTree';
+import { SplitTreeView, SplitNode, makeLeaf, splitNode, removeNode, getTerminalIds, migrateNode } from './SplitTree';
 import './TabView.css';
 
 interface Props {
@@ -33,7 +33,7 @@ export function TabView({ tab }: Props) {
       let restored = false;
       if (tab.layout) {
         try {
-          const parsed = JSON.parse(tab.layout) as SplitNode;
+          const parsed = migrateNode(JSON.parse(tab.layout));
           // Validate that the restored tree's terminal IDs match current panes
           const restoredIds = getTerminalIds(parsed);
           if (restoredIds.length === paneIds.length && restoredIds.every(id => paneIds.includes(id))) {

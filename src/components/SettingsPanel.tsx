@@ -112,6 +112,21 @@ export function SettingsPanel({ onClose }: Props) {
           </label>
           {prefixKeyError && <div className="settings-error">{prefixKeyError}</div>}
 
+          <label className="settings-field">
+            <span className="settings-label">Open file command</span>
+            <input
+              className="settings-input"
+              type="text"
+              placeholder="vim %f  (default)"
+              value={form.open_file_command ?? ''}
+              onChange={e => setForm({ ...form, open_file_command: e.target.value || null })}
+            />
+          </label>
+          <div className="settings-hint settings-hint-small">
+            Command run when opening a file from the file tree. Use <code>%f</code> for the path.
+            Leave empty to use the default (<code>vim</code>).
+          </div>
+
           <div className="settings-hint">
             Theme and font size apply immediately to every open terminal. Prefix key
             changes apply to new keystrokes right away — existing terminals don't

@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { useStore } from '../store';
+import { getBrowserPaneIds } from './SplitTree';
 import './FileTree.css';
 
 interface FileEntry {
@@ -9,6 +11,9 @@ interface FileEntry {
   is_dir: boolean;
   children?: FileEntry[];
 }
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif']);
+const BROWSER_EXTS = new Set([...IMAGE_EXTS, 'pdf']);
 
 export function FileTree() {
   const { toggleFileTree, terminals, focusedTerminalId } = useStore();
@@ -52,14 +57,28 @@ export function FileTree() {
   }, []);
 
   const openFile = useCallback((path: string) => {
-    // Write to the focused terminal to open with vim
+    const ext = path.split('.').pop()?.toLowerCase() ?? '';
+
+    // Images and PDFs open in a browser pane
+    if (BROWSER_EXTS.has(ext)) {
+      const store = useStore.getState();
+      const splitTree = store.activeTabId ? store.splitTrees[store.activeTabId] : null;
+      const hasExistingBrowser = splitTree ? getBrowserPaneIds(splitTree).length > 0 : false;
+      if (!hasExistingBrowser) store.splitFocusedPaneWithBrowser('horizontal');
+      // Convert Windows backslashes and build a file:// URL
+      const fileUrl = 'file:///' + path.replace(/\\/g, '/');
+      setTimeout(() => emit('ipc:browser-navigate', { url: fileUrl }), hasExistingBrowser ? 0 : 400);
+      return;
+    }
+
+    // All other files: write open command to focused terminal
     const store = useStore.getState();
     if (store.focusedTerminalId) {
-      // Escape path for shell
       const escaped = path.replace(/\\/g, '/');
+      const cmd = (store.settings?.open_file_command ?? 'vim %f').replace('%f', `"${escaped}"`);
       invoke('write_terminal', {
         terminalId: store.focusedTerminalId,
-        data: Array.from(new TextEncoder().encode(`vim "${escaped}"\r`)),
+        data: Array.from(new TextEncoder().encode(cmd + '\r')),
       });
     }
   }, []);

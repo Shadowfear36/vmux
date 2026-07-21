@@ -168,17 +168,69 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 2px 8px;
+  padding: 2px 4px 2px 6px;
   background: #1a1b26;
   border-bottom: 1px solid #292e42;
   font-size: 11px;
   color: #565f89;
   min-height: 22px;
+  position: relative;
+  user-select: none;
 }
 
 .terminal-meta-notified {
   background: #1a1b26;
   border-bottom-color: #7dcfff55;
+}
+
+.terminal-meta-drag-source {
+  border-bottom-color: #7aa2f777;
+}
+
+/* Drag handle: the six-dot braille char ⠿ */
+.pane-drag-handle {
+  cursor: grab;
+  color: #3b4261;
+  font-size: 13px;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color 0.1s;
+}
+.pane-drag-handle:hover { color: #7aa2f7; }
+.pane-drag-handle:active { cursor: grabbing; }
+
+/* Close button: top-right × */
+.pane-close-btn {
+  background: none;
+  border: none;
+  color: #3b4261;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.1s;
+  font-family: inherit;
+}
+.pane-close-btn:hover { color: #f7768e; }
+
+/* Drop zones — cover the full meta bar in two halves during a drag */
+.pane-drop-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  z-index: 10;
+  transition: background 0.1s;
+}
+.pane-drop-left  { left: 0; cursor: w-resize; }
+.pane-drop-right { right: 0; cursor: e-resize; }
+
+.pane-drop-hover {
+  background: #7aa2f733;
+  outline: 2px solid #7aa2f7;
+  outline-offset: -2px;
 }
 
 .notification-badge {

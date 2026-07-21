@@ -19,6 +19,9 @@ use tokio::net::windows::named_pipe::ServerOptions;
 use crate::state::AppState;
 use crate::terminal::daemon_client::{read_framed, write_framed};
 
+// For screenshot encoding (png) and temp-path generation (uuid)
+extern crate png;
+
 pub const PIPE_NAME: &str = r"\\.\pipe\vmux-ipc";
 
 // ─── Protocol types ────────────────────────────────────────────────────────────
@@ -32,6 +35,13 @@ pub enum IpcRequest {
     Notify { message: String },
     /// Return a summary of every open terminal pane.
     List,
+    /// Navigate the first available browser pane to a URL.
+    BrowserNavigate { url: String },
+    /// Capture a screenshot of the first available browser pane.
+    /// `output_path` is optional; if None a temp file is used and the path is returned.
+    BrowserScreenshot { output_path: Option<String> },
+    /// Return the current URL of the first available browser pane.
+    BrowserGetUrl,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +57,10 @@ pub enum IpcResponse {
     Ok,
     Terminals(Vec<TerminalSummary>),
     Error(String),
+    /// Path to the saved screenshot file.
+    Screenshot { path: String },
+    /// Current browser URL.
+    BrowserUrl { url: String },
 }
 
 // ─── Server ────────────────────────────────────────────────────────────────────
@@ -141,6 +155,27 @@ async fn handle_client(
                 })
                 .collect();
             IpcResponse::Terminals(summaries)
+        }
+        Some(IpcRequest::BrowserNavigate { url }) => {
+            // Emit an event; the Tauri frontend handles navigation so we don't
+            // need to call the command directly from the IPC thread.
+            let _ = app.emit("ipc:browser-navigate", serde_json::json!({ "url": url }));
+            IpcResponse::Ok
+        }
+        Some(IpcRequest::BrowserGetUrl) => {
+            let url = {
+                let state = app.state::<Mutex<AppState>>();
+                let s = state.lock().unwrap();
+                s.browsers.values()
+                    .find_map(|m| m.active_url().map(|u| u.to_string()))
+                    .unwrap_or_default()
+            };
+            IpcResponse::BrowserUrl { url }
+        }
+        Some(IpcRequest::BrowserScreenshot { .. }) => {
+            // TODO: implement via Win32 PrintWindow.
+            // Tauri 2.10.3 / wry 0.54.4 do not expose capture_image() yet.
+            IpcResponse::Error("Screenshot not yet supported in this build".to_string())
         }
     };
 

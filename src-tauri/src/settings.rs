@@ -13,6 +13,11 @@ pub struct Settings {
     pub font_size: f32,
     /// Single lowercase letter used as the tmux-style prefix key (Ctrl+<letter>).
     pub prefix_key: String,
+    /// Shell command used to open files from the file tree (e.g. "code", "vim", "nvim").
+    /// %f is replaced with the file path; if absent, the path is appended.
+    /// Default: None (falls back to the hardcoded "vim" behaviour preserved for compat).
+    #[serde(default)]
+    pub open_file_command: Option<String>,
 }
 
 impl Default for Settings {
@@ -22,6 +27,7 @@ impl Default for Settings {
             default_shell_id: None,
             font_size: 14.0,
             prefix_key: "a".to_string(),
+            open_file_command: None,
         }
     }
 }
@@ -99,6 +105,7 @@ mod tests {
             default_shell_id: Some("powershell".to_string()),
             font_size: 16.5,
             prefix_key: "g".to_string(),
+            open_file_command: None,
         };
         save(db.path(), &custom).unwrap();
 

@@ -944,9 +944,11 @@ pub fn save_terminal_scrollback(
     if let Some(pane) = s.terminals.panes.get(&terminal_id) {
         if let Some(ref buf) = pane.capture_buf {
             if let Ok(captured) = buf.lock() {
-                // Keep last 128KB to avoid bloating the database
+                // Keep last 128KB to avoid bloating the database.
+                // Floor to a char boundary so we never slice mid-codepoint.
                 let bytes = if captured.len() > 128_000 {
-                    captured[captured.len() - 128_000..].as_bytes()
+                    let start = captured.floor_char_boundary(captured.len() - 128_000);
+                    captured[start..].as_bytes()
                 } else {
                     captured.as_bytes()
                 };

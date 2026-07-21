@@ -13,6 +13,7 @@ mod embeddings;
 mod rag;
 mod worktree;
 mod settings;
+mod ipc;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -49,6 +50,9 @@ pub fn run() {
             if main_hwnd != 0 {
                 unsafe { window_tracking::subclass_main_window(main_hwnd); }
             }
+
+            // Start the IPC control pipe so `vmux ping`, `vmux list`, etc. work.
+            ipc::start_ipc_server(app.handle().clone());
 
             Ok(())
         })

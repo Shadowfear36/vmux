@@ -14,6 +14,12 @@ pub enum PaneKind {
         terminal_id: TerminalId,
         #[serde(default)]
         shell_id: Option<String>,
+        /// Set instead of `shell_id` for agent panes (Claude Code, etc.) —
+        /// presence of this field, not a separate bool, is what tells
+        /// restore to look the ID up in `AppState::agents` instead of
+        /// `AppState::shells`.
+        #[serde(default)]
+        agent_id: Option<String>,
         #[serde(default)]
         working_dir: Option<String>,
         /// Set when this pane's PTY is owned by the vmuxd daemon (Phase 3 of
@@ -22,6 +28,13 @@ pub enum PaneKind {
         /// session instead of spawning a fresh one.
         #[serde(default)]
         daemon_session_id: Option<String>,
+        /// Agent-only: path to the notify side-channel file baked into the
+        /// still-running process's environment at spawn time. Must be
+        /// reused verbatim on reattach (a fresh path would never be written
+        /// to by the already-running process) to keep Claude hook events
+        /// flowing after a vmux restart.
+        #[serde(default)]
+        notify_file: Option<String>,
     },
     Context,
     Browser { url: String },
@@ -386,8 +399,10 @@ mod tests {
             mgr.add_pane_to_tab(&ws.id, &tab.id, PaneKind::Terminal {
                 terminal_id: "term-1".to_string(),
                 shell_id: Some("cmd".to_string()),
+                agent_id: None,
                 working_dir: Some(r"C:\repo".to_string()),
                 daemon_session_id: None,
+                notify_file: None,
             }).unwrap();
             mgr.set_workspace_directory(&ws.id, Some(r"C:\repo")).unwrap();
             ws.id

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { ask } from '@tauri-apps/plugin-dialog';
-import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry, BrowserTabInfo, WorktreeInfo, Settings } from './types';
+import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry, BrowserTabInfo, WorktreeInfo, Settings, DaemonSessionMeta, DaemonOrphanInfo } from './types';
 import { removeNode, splitNode, splitNodeWith, insertAdjacent, makeLeaf, makeBrowserLeaf, findLeaf, type SplitNode, type SplitLeaf } from './components/SplitTree';
 
 const CLAUDE_HOOKS_PROMPTED_KEY = 'vmux-claude-hooks-prompted';
@@ -172,6 +172,15 @@ interface AppStore {
   // Claude Code context-search skill (~/.claude/skills/vmux-context/)
   hasVmuxContextSkill: () => Promise<boolean>;
   installVmuxContextSkill: () => Promise<void>;
+
+  // vmuxd daemon session management (VMUX_DAEMON_TERMINALS, experimental —
+  // see docs/session-reattach-design.md)
+  daemonRunning: boolean;
+  daemonSessions: DaemonSessionMeta[];
+  daemonOrphans: DaemonOrphanInfo[];
+  loadDaemonSessions: () => Promise<void>;
+  killDaemonSession: (sessionId: string) => Promise<void>;
+  killDaemonOrphan: (pid: number) => Promise<void>;
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -233,7 +242,14 @@ export const useStore = create<AppStore>((set, get) => ({
     const pane = await invoke('add_pane', {
       workspaceId,
       tabId,
-      kind: { type: 'terminal', terminal_id: info.id },
+      kind: {
+        type: 'terminal',
+        terminal_id: info.id,
+        agent_id: info.agent_id,
+        working_dir: info.working_dir,
+        daemon_session_id: info.daemon_session_id,
+        notify_file: info.notify_file,
+      },
     });
 
     set(s => ({
@@ -1203,6 +1219,30 @@ export const useStore = create<AppStore>((set, get) => ({
 
   hasVmuxContextSkill: async () => invoke('has_vmux_context_skill'),
   installVmuxContextSkill: async () => { await invoke('install_vmux_context_skill'); },
+
+  daemonRunning: false,
+  daemonSessions: [],
+  daemonOrphans: [],
+  loadDaemonSessions: async () => {
+    const running: boolean = await invoke('is_daemon_running');
+    if (!running) {
+      set({ daemonRunning: false, daemonSessions: [], daemonOrphans: [] });
+      return;
+    }
+    const [sessions, orphans] = await Promise.all([
+      invoke<DaemonSessionMeta[]>('list_daemon_sessions').catch(() => []),
+      invoke<DaemonOrphanInfo[]>('list_daemon_orphans').catch(() => []),
+    ]);
+    set({ daemonRunning: true, daemonSessions: sessions, daemonOrphans: orphans });
+  },
+  killDaemonSession: async (sessionId) => {
+    await invoke('kill_daemon_session', { sessionId });
+    await get().loadDaemonSessions();
+  },
+  killDaemonOrphan: async (pid) => {
+    await invoke('kill_daemon_orphan', { pid });
+    await get().loadDaemonSessions();
+  },
 }));
 
 /** Recursively remap terminal IDs in a split tree using an old→new ID mapping.

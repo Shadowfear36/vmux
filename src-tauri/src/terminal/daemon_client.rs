@@ -1,8 +1,8 @@
-//! Client for the `vmuxd` background daemon (Phase 2 of
+//! Client for the `vmuxd` background daemon (Phase 2/3 of
 //! docs/session-reattach-design.md). Gated behind the VMUX_DAEMON_TERMINALS
-//! env var — see `TerminalPane::spawn`. Only plain shell terminals
-//! (`create_terminal`) use this path so far; agent terminals and workspace
-//! restore are untouched, keeping the existing in-process path as default.
+//! env var — see `TerminalPane::spawn`. Both plain shells (`create_terminal`)
+//! and agent terminals (`create_agent_terminal`) can use this path; the
+//! in-process `PtySession` path remains the default when the flag is unset.
 //!
 //! Protocol types here are shared with `src/bin/vmuxd.rs` (the daemon
 //! binary) via this crate's `pub` visibility — no duplicated definitions.
@@ -19,9 +19,26 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 pub const PIPE_NAME: &str = r"\\.\pipe\vmux-daemon";
 
+/// Bump whenever `Request`/`Event` change in a way that isn't purely
+/// additive. Checked by the `Hello` handshake so a stale `vmuxd.exe` left
+/// running across an app update gets detected (and self-healed via
+/// `Request::Shutdown`) instead of silently misbehaving — see §16/§17 of
+/// docs/session-reattach-design.md.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Marker prefix on the error string returned when a connected daemon
+/// reports a different `PROTOCOL_VERSION`, so callers can distinguish "stale
+/// daemon, needs a restart" from an ordinary connection failure.
+pub const VERSION_MISMATCH_PREFIX: &str = "VMUXD_VERSION_MISMATCH";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
-    Spawn { shell_path: String, args: Vec<String>, cwd: Option<String>, cols: u16, rows: u16 },
+    /// Must be the very first message on every connection. The daemon
+    /// replies `HelloAck` if versions match, or `Error` (prefixed with
+    /// `VERSION_MISMATCH_PREFIX`) if not — in which case the only other
+    /// request it will still honor on that connection is `Shutdown`.
+    Hello { version: u32 },
+    Spawn { shell_path: String, args: Vec<String>, env: Vec<(String, String)>, cwd: Option<String>, cols: u16, rows: u16 },
     Attach { session_id: String },
     Write(Vec<u8>),
     Resize { cols: u16, rows: u16 },
@@ -30,15 +47,58 @@ pub enum Request {
     /// leave its shell/agent process running forever as an unreachable
     /// (but never cleaned up) daemon session.
     Kill { session_id: String },
+    /// One-shot control-plane request: list all currently registered
+    /// sessions (attached or not).
+    ListSessions,
+    /// One-shot control-plane request: list processes found alive-but-
+    /// orphaned at daemon startup (left over from a previous `vmuxd` crash).
+    ListOrphans,
+    /// One-shot control-plane request: forcibly terminate an orphaned
+    /// process by PID (there's no session/registry entry for it to route
+    /// through, since orphans are by definition outside the daemon's
+    /// control — this just calls into the OS directly).
+    KillOrphan { pid: u32 },
+    /// Gracefully terminate the daemon itself: kills every registered
+    /// session's process, then exits. Used to replace a stale (version-
+    /// mismatched) daemon — a real UX tradeoff (it ends every running
+    /// session), only ever sent automatically right after a version
+    /// mismatch is detected, never casually.
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
+    HelloAck,
     Spawned { session_id: String, pid: Option<u32> },
     Replay(Vec<u8>),
     Output(Vec<u8>),
     Exited,
     Error(String),
+    SessionList(Vec<SessionMeta>),
+    OrphanList(Vec<OrphanInfo>),
+    Ok,
+}
+
+/// Metadata for a live daemon-owned session — used by `ListSessions` to
+/// power a "daemon sessions" view even for sessions with no attached pane.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMeta {
+    pub session_id: String,
+    pub pid: Option<u32>,
+    /// The command that was spawned (e.g. a shell path or agent binary) —
+    /// enough for a human to recognize which session is which.
+    pub label: String,
+    pub attached_clients: u32,
+}
+
+/// A process left alive-but-unreachable by a previous `vmuxd` crash (see
+/// §2/§12 of the design doc: killing the daemon doesn't kill its children,
+/// but their anonymous pipe handles die with it, so they can never be
+/// reattached — only recognized and, if desired, killed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrphanInfo {
+    pub pid: u32,
+    pub label: String,
 }
 
 /// Length-prefixed JSON framing, used for both directions of the protocol —
@@ -101,6 +161,7 @@ impl DaemonPtySession {
     pub async fn spawn(
         shell_path: &str,
         args: &[String],
+        env: &[(String, String)],
         cwd: Option<&str>,
         cols: u16,
         rows: u16,
@@ -110,9 +171,12 @@ impl DaemonPtySession {
         let (read_half, mut write_half) = tokio::io::split(client);
         let mut read_half = read_half;
 
+        hello_handshake(&mut read_half, &mut write_half).await?;
+
         send_request(&mut write_half, &Request::Spawn {
             shell_path: shell_path.to_string(),
             args: args.to_vec(),
+            env: env.to_vec(),
             cwd: cwd.map(|s| s.to_string()),
             cols, rows,
         }).await?;
@@ -136,6 +200,8 @@ impl DaemonPtySession {
         let client = connect_with_retry(5).await?;
         let (read_half, mut write_half) = tokio::io::split(client);
         let mut read_half = read_half;
+
+        hello_handshake(&mut read_half, &mut write_half).await?;
 
         send_request(&mut write_half, &Request::Attach { session_id: session_id.to_string() }).await?;
         send_request(&mut write_half, &Request::Resize { cols, rows }).await?;
@@ -232,6 +298,23 @@ fn prepend_replay(replay: Vec<u8>, mut rx: UnboundedReceiver<Vec<u8>>) -> Unboun
     new_rx
 }
 
+/// Sends `Hello` and expects `HelloAck` back. Every connection must do this
+/// before anything else — see `Request::Hello`'s doc comment. Returns a
+/// `VERSION_MISMATCH_PREFIX`-prefixed error on a version mismatch so callers
+/// (specifically `ensure_daemon_running`) can react to it specially.
+async fn hello_handshake<R, W>(read_half: &mut R, write_half: &mut W) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    send_request(write_half, &Request::Hello { version: PROTOCOL_VERSION }).await?;
+    match recv_event(read_half).await? {
+        Some(Event::HelloAck) => Ok(()),
+        Some(Event::Error(msg)) => Err(anyhow!("{msg}")),
+        other => Err(anyhow!("unexpected daemon response to Hello: {other:?}")),
+    }
+}
+
 async fn connect_with_retry(attempts: u32) -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {
     for i in 0..attempts {
         match ClientOptions::new().open(PIPE_NAME) {
@@ -251,10 +334,28 @@ async fn connect_with_retry(attempts: u32) -> Result<tokio::net::windows::named_
 }
 
 /// If the daemon isn't reachable, launch it detached (independent of vmux's
-/// own process/job object) so its lifetime doesn't tie to the UI.
+/// own process/job object) so its lifetime doesn't tie to the UI. If it *is*
+/// reachable but running a stale (mismatched) protocol version — e.g. left
+/// over from before an app update — asks it to shut down and launches a
+/// fresh one instead of silently proceeding against an incompatible daemon.
 async fn ensure_daemon_running() -> Result<()> {
-    if ClientOptions::new().open(PIPE_NAME).is_ok() {
-        return Ok(());
+    if let Ok(client) = ClientOptions::new().open(PIPE_NAME) {
+        let (read_half, mut write_half) = tokio::io::split(client);
+        let mut read_half = read_half;
+        match hello_handshake(&mut read_half, &mut write_half).await {
+            Ok(()) => return Ok(()),
+            Err(e) if e.to_string().contains(VERSION_MISMATCH_PREFIX) => {
+                log::warn!("stale vmuxd detected ({e}), asking it to shut down and relaunching");
+                let _ = send_request(&mut write_half, &Request::Shutdown).await;
+                // Wait for the old daemon to actually exit (pipe becomes unreachable)
+                // before launching a replacement — otherwise we could race it.
+                for _ in 0..40 {
+                    if ClientOptions::new().open(PIPE_NAME).is_err() { break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     let exe = std::env::current_exe()?;
@@ -274,4 +375,67 @@ async fn ensure_daemon_running() -> Result<()> {
     // Give it a moment to bind the pipe before the caller tries to connect.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     Ok(())
+}
+
+/// Opens a short-lived control connection: connect, `Hello`, send one
+/// request, read one reply, return it (connection is dropped after).
+async fn control_request(req: Request) -> Result<Event> {
+    let client = connect_with_retry(5).await?;
+    let (read_half, mut write_half) = tokio::io::split(client);
+    let mut read_half = read_half;
+    hello_handshake(&mut read_half, &mut write_half).await?;
+    send_request(&mut write_half, &req).await?;
+    recv_event(&mut read_half).await?.ok_or_else(|| anyhow!("daemon closed connection without replying"))
+}
+
+/// Whether `vmuxd` is currently reachable and speaking a compatible
+/// protocol version. Does not launch it if not — purely a status check
+/// (e.g. for a Settings-panel "daemon not running" display).
+pub async fn is_daemon_running() -> bool {
+    let Ok(client) = ClientOptions::new().open(PIPE_NAME) else { return false };
+    let (read_half, mut write_half) = tokio::io::split(client);
+    let mut read_half = read_half;
+    hello_handshake(&mut read_half, &mut write_half).await.is_ok()
+}
+
+/// List every session currently registered on the daemon, whether or not
+/// any pane is attached to it — surfaces sessions that would otherwise be
+/// invisible (e.g. after their owning tab/workspace was deleted without
+/// explicitly killing the session).
+pub async fn list_sessions() -> Result<Vec<SessionMeta>> {
+    match control_request(Request::ListSessions).await? {
+        Event::SessionList(sessions) => Ok(sessions),
+        Event::Error(msg) => Err(anyhow!("{msg}")),
+        other => Err(anyhow!("unexpected daemon response to ListSessions: {other:?}")),
+    }
+}
+
+/// Kill a daemon session by ID without needing a live `DaemonPtySession`
+/// handle to it — used by the Settings panel to kill sessions with no
+/// attached pane, where `DaemonPtySession::kill` isn't available.
+pub async fn kill_session(session_id: &str) -> Result<()> {
+    match control_request(Request::Kill { session_id: session_id.to_string() }).await? {
+        Event::Ok => Ok(()),
+        Event::Error(msg) => Err(anyhow!("{msg}")),
+        other => Err(anyhow!("unexpected daemon response to Kill: {other:?}")),
+    }
+}
+
+/// List processes found alive-but-orphaned at the current daemon's
+/// startup — leftovers from a previous `vmuxd` crash (see `OrphanInfo`).
+pub async fn list_orphans() -> Result<Vec<OrphanInfo>> {
+    match control_request(Request::ListOrphans).await? {
+        Event::OrphanList(orphans) => Ok(orphans),
+        Event::Error(msg) => Err(anyhow!("{msg}")),
+        other => Err(anyhow!("unexpected daemon response to ListOrphans: {other:?}")),
+    }
+}
+
+/// Forcibly terminate an orphaned process by PID.
+pub async fn kill_orphan(pid: u32) -> Result<()> {
+    match control_request(Request::KillOrphan { pid }).await? {
+        Event::Ok => Ok(()),
+        Event::Error(msg) => Err(anyhow!("{msg}")),
+        other => Err(anyhow!("unexpected daemon response to KillOrphan: {other:?}")),
+    }
 }

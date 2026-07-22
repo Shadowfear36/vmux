@@ -169,8 +169,82 @@ export function SettingsPanel({ onClose }: Props) {
             hasFn={hasVmuxContextSkill}
             installFn={installVmuxContextSkill}
           />
+
+          <DaemonSessionsSection />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Experimental (VMUX_DAEMON_TERMINALS): lists vmuxd-owned sessions and any
+ * orphaned processes left over from a previous crash, with Kill buttons for
+ * both. See docs/session-reattach-design.md §17.
+ */
+function DaemonSessionsSection() {
+  const daemonRunning = useStore(s => s.daemonRunning);
+  const daemonSessions = useStore(s => s.daemonSessions);
+  const daemonOrphans = useStore(s => s.daemonOrphans);
+  const loadDaemonSessions = useStore(s => s.loadDaemonSessions);
+  const killDaemonSession = useStore(s => s.killDaemonSession);
+  const killDaemonOrphan = useStore(s => s.killDaemonOrphan);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    loadDaemonSessions().finally(() => setLoaded(true));
+  }, []);
+
+  return (
+    <div className="settings-field" style={{ marginTop: 20, borderTop: '1px solid #292e42', paddingTop: 16 }}>
+      <span className="settings-label">Daemon sessions (experimental)</span>
+      <div className="settings-hint settings-hint-small">
+        Terminals started with <code>VMUX_DAEMON_TERMINALS</code> set survive closing vmux — the shell/agent process
+        keeps running in a background <code>vmuxd</code> process and gets reattached on next launch.
+      </div>
+
+      {!loaded ? (
+        <div className="settings-hint settings-hint-small" style={{ marginTop: 8 }}>Checking...</div>
+      ) : !daemonRunning ? (
+        <div className="settings-hint settings-hint-small" style={{ marginTop: 8 }}>Daemon not running.</div>
+      ) : (
+        <>
+          <div style={{ marginTop: 8 }}>
+            {daemonSessions.length === 0 ? (
+              <div className="settings-hint settings-hint-small">No active sessions.</div>
+            ) : (
+              daemonSessions.map(s => (
+                <div key={s.session_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, padding: '4px 0' }}>
+                  <span>{s.label} (pid {s.pid ?? '?'}) — {s.attached_clients} attached</span>
+                  <button className="settings-save-btn" style={{ padding: '2px 8px' }} onClick={() => killDaemonSession(s.session_id)}>
+                    Kill
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+
+          {daemonOrphans.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div className="settings-hint settings-hint-small">
+                Found from a previous crash — unreachable but still running:
+              </div>
+              {daemonOrphans.map(o => (
+                <div key={o.pid} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, padding: '4px 0' }}>
+                  <span>{o.label} (pid {o.pid})</span>
+                  <button className="settings-save-btn" style={{ padding: '2px 8px' }} onClick={() => killDaemonOrphan(o.pid)}>
+                    Kill
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="settings-actions" style={{ marginTop: 8 }}>
+            <button className="settings-save-btn" onClick={() => loadDaemonSessions()}>Refresh</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

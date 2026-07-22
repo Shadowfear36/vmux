@@ -180,6 +180,11 @@ pub fn run() {
             commands::rag_search,
             commands::embed_chunks,
             commands::set_embedding_config,
+            commands::list_daemon_sessions,
+            commands::kill_daemon_session,
+            commands::list_daemon_orphans,
+            commands::kill_daemon_orphan,
+            commands::is_daemon_running,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vmux");

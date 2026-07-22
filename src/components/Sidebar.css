@@ -244,6 +244,12 @@
   font-family: inherit;
 }
 
+.daemon-badge {
+  color: #bb9af7;
+  font-size: 11px;
+  cursor: default;
+}
+
 .git-branch {
   color: #9ece6a;
   display: flex;

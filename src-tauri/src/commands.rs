@@ -265,7 +265,7 @@ pub fn list_agents(state: State<'_, Mutex<AppState>>) -> Vec<AgentProfile> {
 }
 
 #[tauri::command]
-pub fn create_agent_terminal(
+pub async fn create_agent_terminal(
     app: AppHandle,
     state: State<'_, Mutex<AppState>>,
     agent_id: String,
@@ -276,16 +276,30 @@ pub fn create_agent_terminal(
 ) -> Result<TerminalInfo, String> {
     // Hook installation into ~/.claude/settings.json requires explicit user
     // consent — see `install_claude_hooks`. We never do it implicitly here.
-    let mut s = state.lock().map_err(|e| e.to_string())?;
-    let agent = s.agents.iter().find(|a| a.id == agent_id)
-        .ok_or_else(|| format!("agent not found: {agent_id}"))?
-        .clone();
+    let agent = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        s.agents.iter().find(|a| a.id == agent_id)
+            .ok_or_else(|| format!("agent not found: {agent_id}"))?
+            .clone()
+    }; // ← AppState lock released before the (possibly daemon-connecting) spawn
+
     let working_dir_for_watcher = working_dir.clone();
-    let result = s.terminals.spawn_agent(
+    let result = crate::terminal::TerminalPane::spawn_agent_maybe_daemon(
         working_dir, &agent, session_name, resume_session,
         continue_session.unwrap_or(false),
     )
+        .await
         .map_err(|e| e.to_string());
+
+    let result = match result {
+        Ok((pane, pty_rx)) => {
+            let info = state.lock().map_err(|e| e.to_string())?
+                .terminals.insert(pane, pty_rx);
+            Ok(info)
+        }
+        Err(e) => Err(e),
+    };
+
     match &result {
         Ok(info) => {
             log::info!("create_agent_terminal OK: id={} agent={} pid={:?}", info.id, info.shell_name, info.pid);
@@ -349,6 +363,37 @@ pub fn has_vmux_context_skill() -> bool {
 #[tauri::command]
 pub fn install_vmux_context_skill() -> Result<(), String> {
     crate::agent_skills::install_vmux_context_skill().map_err(|e| e.to_string())
+}
+
+// ─── Daemon (vmuxd) session management ────────────────────────────────────────
+// Thin wrappers around the daemon_client control-plane functions (see
+// docs/session-reattach-design.md §17). These talk directly to vmuxd's own
+// registry over the named pipe — they don't touch `Mutex<AppState>` at all,
+// since the daemon (not AppState) is the source of truth for its sessions.
+
+#[tauri::command]
+pub async fn list_daemon_sessions() -> Result<Vec<crate::terminal::daemon_client::SessionMeta>, String> {
+    crate::terminal::daemon_client::list_sessions().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kill_daemon_session(session_id: String) -> Result<(), String> {
+    crate::terminal::daemon_client::kill_session(&session_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_daemon_orphans() -> Result<Vec<crate::terminal::daemon_client::OrphanInfo>, String> {
+    crate::terminal::daemon_client::list_orphans().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn kill_daemon_orphan(pid: u32) -> Result<(), String> {
+    crate::terminal::daemon_client::kill_orphan(pid).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn is_daemon_running() -> bool {
+    crate::terminal::daemon_client::is_daemon_running().await
 }
 
 // ─── Workspace commands ───────────────────────────────────────────────────────
@@ -417,19 +462,29 @@ pub async fn save_workspace_state(
     Ok(())
 }
 
+/// Either a plain shell or an agent to restore a pane as — panes distinguish
+/// the two via `PaneKind::Terminal`'s `agent_id` vs `shell_id`.
+enum RestoreTarget {
+    Shell(ShellProfile),
+    Agent(AgentProfile, Option<String> /* notify_file */),
+}
+
 /// Restore terminals for persisted panes after app restart.
 /// For panes with a saved `daemon_session_id`, tries to reattach to the
 /// still-running vmuxd session first (Phase 3 of the session-reattach
 /// design doc); falls back to spawning a fresh PTY if the daemon is
 /// unreachable or the session no longer exists. Local panes just spawn
-/// fresh, as before.
+/// fresh, as before. Agent panes (identified by `agent_id`) are restored
+/// the same way, reattaching to a still-running daemon-backed agent
+/// process when possible instead of always starting a fresh one.
 #[tauri::command]
 pub async fn restore_workspace_terminals(
+    app: AppHandle,
     state: State<'_, Mutex<AppState>>,
     workspace_id: String,
 ) -> Result<Vec<TerminalInfo>, String> {
-    // (tab_id, pane_id, shell, cwd, daemon_session_id)
-    let to_restore: Vec<(String, String, ShellProfile, Option<String>, Option<String>)> = {
+    // (tab_id, pane_id, target, cwd, daemon_session_id)
+    let to_restore: Vec<(String, String, RestoreTarget, Option<String>, Option<String>)> = {
         let s = state.lock().map_err(|e| e.to_string())?;
         let ws = s.workspaces.workspaces.get(&workspace_id)
             .ok_or("workspace not found")?.clone();
@@ -438,15 +493,21 @@ pub async fn restore_workspace_terminals(
         let mut entries = Vec::new();
         for tab in &ws.tabs {
             for pane in &tab.panes {
-                if let PaneKind::Terminal { shell_id, working_dir, daemon_session_id, .. } = &pane.kind {
-                    let shell = shell_id.as_deref()
-                        .and_then(|id| s.shells.iter().find(|sh| sh.id == id))
-                        .or_else(|| s.shells.first())
-                        .cloned();
-                    if let Some(shell) = shell {
-                        // Priority: saved pane CWD > workspace directory > default
-                        let cwd = working_dir.clone().or_else(|| ws_dir.clone());
-                        entries.push((tab.id.clone(), pane.id.clone(), shell, cwd, daemon_session_id.clone()));
+                if let PaneKind::Terminal { shell_id, agent_id, working_dir, daemon_session_id, notify_file, .. } = &pane.kind {
+                    // Priority: saved pane CWD > workspace directory > default
+                    let cwd = working_dir.clone().or_else(|| ws_dir.clone());
+                    let target = if let Some(agent_id) = agent_id {
+                        s.agents.iter().find(|a| &a.id == agent_id).cloned()
+                            .map(|a| RestoreTarget::Agent(a, notify_file.clone()))
+                    } else {
+                        shell_id.as_deref()
+                            .and_then(|id| s.shells.iter().find(|sh| sh.id == id))
+                            .or_else(|| s.shells.first())
+                            .cloned()
+                            .map(RestoreTarget::Shell)
+                    };
+                    if let Some(target) = target {
+                        entries.push((tab.id.clone(), pane.id.clone(), target, cwd, daemon_session_id.clone()));
                     }
                 }
             }
@@ -457,10 +518,16 @@ pub async fn restore_workspace_terminals(
     let mut infos = Vec::new();
     // (tab_id, pane_id, new PaneKind, TerminalPane, receiver)
     let mut spawned: Vec<(String, String, PaneKind, crate::terminal::TerminalPane, mpsc::UnboundedReceiver<Vec<u8>>)> = Vec::new();
+    // (terminal_id, notify_file, working_dir) — agent notify watchers to (re)start once panes are inserted
+    let mut notify_watchers: Vec<(String, String, Option<String>)> = Vec::new();
 
-    for (tab_id, pane_id, shell, cwd, daemon_session_id) in to_restore {
+    for (tab_id, pane_id, target, cwd, daemon_session_id) in to_restore {
         let attached = if let Some(session_id) = &daemon_session_id {
-            match crate::terminal::TerminalPane::attach_daemon(session_id, cwd.clone(), &shell).await {
+            let result = match &target {
+                RestoreTarget::Shell(shell) => crate::terminal::TerminalPane::attach_daemon(session_id, cwd.clone(), shell).await,
+                RestoreTarget::Agent(agent, notify_file) => crate::terminal::TerminalPane::attach_daemon_agent(session_id, cwd.clone(), agent, notify_file.clone()).await,
+            };
+            match result {
                 Ok(result) => Some(result),
                 Err(e) => {
                     log::warn!("daemon session {session_id} unreachable, respawning: {e}");
@@ -476,17 +543,41 @@ pub async fn restore_workspace_terminals(
         // daemon sessions; it only reattaches ones that already existed.
         let (pane, rx, session_id_for_pane) = match attached {
             Some((pane, rx)) => (pane, rx, daemon_session_id.clone()),
-            None => match crate::terminal::TerminalPane::spawn(cwd.clone(), &shell) {
-                Ok((pane, rx)) => (pane, rx, None),
-                Err(e) => { log::warn!("restore terminal failed: {e}"); continue; }
-            },
+            None => {
+                let fresh = match &target {
+                    RestoreTarget::Shell(shell) => crate::terminal::TerminalPane::spawn(cwd.clone(), shell),
+                    RestoreTarget::Agent(agent, _) => crate::terminal::TerminalPane::spawn_agent(cwd.clone(), agent, None, None, false),
+                };
+                match fresh {
+                    Ok((pane, rx)) => (pane, rx, None),
+                    Err(e) => { log::warn!("restore terminal failed: {e}"); continue; }
+                }
+            }
         };
 
-        let kind = PaneKind::Terminal {
-            terminal_id: pane.info.id.clone(),
-            shell_id: Some(shell.id.clone()),
-            working_dir: cwd,
-            daemon_session_id: session_id_for_pane,
+        if pane.info.is_agent {
+            if let Some(notify_path) = &pane.info.notify_file {
+                notify_watchers.push((pane.info.id.clone(), notify_path.clone(), cwd.clone()));
+            }
+        }
+
+        let kind = match &target {
+            RestoreTarget::Shell(shell) => PaneKind::Terminal {
+                terminal_id: pane.info.id.clone(),
+                shell_id: Some(shell.id.clone()),
+                agent_id: None,
+                working_dir: cwd,
+                daemon_session_id: session_id_for_pane,
+                notify_file: None,
+            },
+            RestoreTarget::Agent(agent, _) => PaneKind::Terminal {
+                terminal_id: pane.info.id.clone(),
+                shell_id: None,
+                agent_id: Some(agent.id.clone()),
+                working_dir: cwd,
+                daemon_session_id: session_id_for_pane,
+                notify_file: pane.info.notify_file.clone(),
+            },
         };
         spawned.push((tab_id, pane_id, kind, pane, rx));
     }
@@ -516,6 +607,10 @@ pub async fn restore_workspace_terminals(
                 log::error!("failed to persist workspace {workspace_id}: {e}");
             }
         }
+    } // ← AppState lock released before starting notify watchers
+
+    for (terminal_id, notify_path, cwd) in notify_watchers {
+        crate::claude_hooks::start_notify_watcher(terminal_id, notify_path, cwd, app.clone());
     }
 
     Ok(infos)

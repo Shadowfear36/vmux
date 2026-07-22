@@ -424,6 +424,14 @@ export function TerminalMetaBar({ terminalId, onClose, onDragStart }: TerminalMe
           * {terminal.notification_message ?? 'notification'}
         </button>
       )}
+      {terminal.daemon_session_id && (
+        <span
+          className="daemon-badge"
+          title="Daemon-backed — survives closing vmux (experimental)"
+        >
+          ⟲
+        </span>
+      )}
       {git?.branch && (
         <span className="git-branch">
           {git.branch}

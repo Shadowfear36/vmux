@@ -51,8 +51,12 @@ pub struct TerminalInfo {
     pub is_agent: bool,
     pub agent_id: Option<String>,
     pub claude_session_id: Option<String>,
-    /// Path to the notify side-channel file (for Claude hook events)
-    #[serde(skip)]
+    /// Path to the notify side-channel file (for Claude hook events). Sent
+    /// to the frontend so it can be persisted in the pane's `PaneKind` and
+    /// passed back on workspace restore, so a reattached daemon-backed agent
+    /// session's notify watcher points at the same path the running
+    /// process's env still has baked in.
+    #[serde(default)]
     pub notify_file: Option<String>,
     /// Set when this pane's PTY is owned by the vmuxd daemon (Phase 3 of
     /// docs/session-reattach-design.md). None for local (PtySession) panes.
@@ -186,9 +190,9 @@ impl TerminalPane {
     }
 
     /// Whether daemon-backed terminals (Phase 2 of the session-reattach
-    /// design doc) are enabled. Only `spawn_maybe_daemon` (plain shells
-    /// created via `create_terminal`) checks this — agent terminals and
-    /// workspace restore always use the local `PtySession` path via `spawn`.
+    /// design doc) are enabled. Checked by `spawn_maybe_daemon` (plain shells)
+    /// and `spawn_agent_maybe_daemon` (agent terminals); workspace restore
+    /// decides per-pane based on a saved `daemon_session_id` instead.
     pub fn daemon_terminals_enabled() -> bool {
         std::env::var("VMUX_DAEMON_TERMINALS").is_ok()
     }
@@ -209,7 +213,7 @@ impl TerminalPane {
         });
 
         let (pty, pty_rx) = DaemonPtySession::spawn(
-            &shell.path, &shell.args, effective_dir.as_deref(), 80, 24,
+            &shell.path, &shell.args, &[], effective_dir.as_deref(), 80, 24,
         ).await?;
         let (grid, events_rx) = TermGrid::new(80, 24, pty.writer_handle());
 
@@ -284,6 +288,50 @@ impl TerminalPane {
 
     // ── Phase 1b: agent PTY creation ────────────────────────────────────────
 
+    /// Builds the effective args/env for launching `agent`, including
+    /// Claude-specific enhancements (notify file, --continue/--resume).
+    /// Shared between the local and daemon-backed spawn paths so they can
+    /// never drift apart.
+    fn build_agent_args_env(
+        id: &str,
+        agent: &AgentProfile,
+        session_name: &Option<String>,
+        resume_session: &Option<String>,
+        continue_session: bool,
+    ) -> (Vec<String>, Vec<(String, String)>, Option<String>) {
+        let mut args = agent.args.clone();
+        let mut env = agent.env.clone();
+        let mut notify_file: Option<String> = None;
+
+        if agent.id == "claude" {
+            env.push(("VMUX".into(), "1".into()));
+
+            let notify_dir = std::env::temp_dir().join("vmux");
+            let _ = std::fs::create_dir_all(&notify_dir);
+            let notify_path = notify_dir.join(format!("{}.notify", id));
+            let _ = std::fs::File::create(&notify_path);
+            let path_str = notify_path.to_string_lossy().to_string();
+            env.push(("VMUX_NOTIFY_FILE".into(), path_str.clone()));
+            notify_file = Some(path_str);
+
+            if let Some(name) = session_name {
+                args.push("--name".into());
+                args.push(name.clone());
+            }
+
+            // Session persistence: --continue resumes last session in CWD,
+            // --resume <id> resumes a specific session
+            if continue_session {
+                args.push("--continue".into());
+            } else if let Some(sid) = resume_session {
+                args.push("--resume".into());
+                args.push(sid.clone());
+            }
+        }
+
+        (args, env, notify_file)
+    }
+
     pub fn spawn_agent(
         working_dir: Option<String>,
         agent: &AgentProfile,
@@ -296,36 +344,9 @@ impl TerminalPane {
             std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()
         });
 
-        // Build args and env, with Claude-specific enhancements
-        let mut args = agent.args.clone();
-        let mut env = agent.env.clone();
-        let mut notify_file: Option<String> = None;
-
-        if agent.id == "claude" {
-            env.push(("VMUX".into(), "1".into()));
-
-            let notify_dir = std::env::temp_dir().join("vmux");
-            let _ = std::fs::create_dir_all(&notify_dir);
-            let notify_path = notify_dir.join(format!("{}.notify", &id));
-            let _ = std::fs::File::create(&notify_path);
-            let path_str = notify_path.to_string_lossy().to_string();
-            env.push(("VMUX_NOTIFY_FILE".into(), path_str.clone()));
-            notify_file = Some(path_str);
-
-            if let Some(name) = &session_name {
-                args.push("--name".into());
-                args.push(name.clone());
-            }
-
-            // Session persistence: --continue resumes last session in CWD,
-            // --resume <id> resumes a specific session
-            if continue_session {
-                args.push("--continue".into());
-            } else if let Some(sid) = &resume_session {
-                args.push("--resume".into());
-                args.push(sid.clone());
-            }
-        }
+        let (args, env, notify_file) = Self::build_agent_args_env(
+            &id, agent, &session_name, &resume_session, continue_session,
+        );
 
         let (pty, pty_rx) = PtySession::spawn_command(
             80, 24, effective_dir.as_deref(),
@@ -355,6 +376,116 @@ impl TerminalPane {
         let pane = TerminalPane {
             info,
             pty: PtyBackend::Local(pty),
+            grid: Arc::new(Mutex::new(grid)),
+            win: None,
+            renderer: None,
+            events_rx: Some(events_rx),
+            last_cols: 80,
+            last_rows: 24,
+            capture_buf,
+        };
+        Ok((pane, pty_rx))
+    }
+
+    /// Like `spawn_agent`, but routes through the `vmuxd` daemon when
+    /// `VMUX_DAEMON_TERMINALS` is set — so agent sessions (e.g. a long-running
+    /// Claude Code task) survive vmux closing, same as plain shells do via
+    /// `spawn_maybe_daemon`. Async for the same reason as `spawn_maybe_daemon`:
+    /// callers must not hold `Mutex<AppState>` across this `.await`.
+    pub async fn spawn_agent_maybe_daemon(
+        working_dir: Option<String>,
+        agent: &AgentProfile,
+        session_name: Option<String>,
+        resume_session: Option<String>,
+        continue_session: bool,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
+        if !Self::daemon_terminals_enabled() {
+            return Self::spawn_agent(working_dir, agent, session_name, resume_session, continue_session);
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let effective_dir = working_dir.or_else(|| {
+            std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()
+        });
+
+        let (args, env, notify_file) = Self::build_agent_args_env(
+            &id, agent, &session_name, &resume_session, continue_session,
+        );
+
+        let (pty, pty_rx) = DaemonPtySession::spawn(
+            &agent.command, &args, &env, effective_dir.as_deref(), 80, 24,
+        ).await?;
+        let (grid, events_rx) = TermGrid::new(80, 24, pty.writer_handle());
+
+        let info = TerminalInfo {
+            id,
+            title: agent.name.clone(),
+            shell_id: agent.id.clone(),
+            shell_name: agent.name.clone(),
+            working_dir: effective_dir,
+            has_notification: false,
+            notification_message: None,
+            pid: pty.pid,
+            is_agent: true,
+            agent_id: Some(agent.id.clone()),
+            claude_session_id: None,
+            notify_file,
+            daemon_session_id: Some(pty.session_id.clone()),
+        };
+
+        let capture_buf = Some(Arc::new(std::sync::Mutex::new(String::new())));
+
+        let pane = TerminalPane {
+            info,
+            pty: PtyBackend::Daemon(pty),
+            grid: Arc::new(Mutex::new(grid)),
+            win: None,
+            renderer: None,
+            events_rx: Some(events_rx),
+            last_cols: 80,
+            last_rows: 24,
+            capture_buf,
+        };
+        Ok((pane, pty_rx))
+    }
+
+    /// Reattach to a daemon-backed agent session persisted from a previous
+    /// vmux run (the agent counterpart of `attach_daemon`). `notify_file`
+    /// must be the *same* path passed to the still-running process at
+    /// original spawn time (baked into its env) — the caller is responsible
+    /// for restarting a notify-file watcher pointed at it, since a fresh
+    /// path would never be written to by the already-running process.
+    pub async fn attach_daemon_agent(
+        session_id: &str,
+        working_dir: Option<String>,
+        agent: &AgentProfile,
+        notify_file: Option<String>,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
+        let id = Uuid::new_v4().to_string();
+        let (pty, pty_rx) = DaemonPtySession::attach(session_id, 80, 24).await?;
+        let (grid, events_rx) = TermGrid::new(80, 24, pty.writer_handle());
+
+        let info = TerminalInfo {
+            id,
+            title: agent.name.clone(),
+            shell_id: agent.id.clone(),
+            shell_name: agent.name.clone(),
+            working_dir,
+            has_notification: false,
+            notification_message: None,
+            pid: pty.pid,
+            is_agent: true,
+            agent_id: Some(agent.id.clone()),
+            claude_session_id: None,
+            notify_file,
+            daemon_session_id: Some(pty.session_id.clone()),
+        };
+
+        let capture_buf = Some(Arc::new(std::sync::Mutex::new(String::new())));
+
+        let pane = TerminalPane {
+            info,
+            pty: PtyBackend::Daemon(pty),
             grid: Arc::new(Mutex::new(grid)),
             win: None,
             renderer: None,

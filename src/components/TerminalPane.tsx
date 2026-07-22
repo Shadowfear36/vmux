@@ -134,11 +134,19 @@ export function TerminalPane({ terminalId, isFocused, onFocus }: Props) {
 
   useEffect(() => {
     window.addEventListener('resize', reportBounds);
-    let unlisten: (() => void) | null = null;
-    getCurrentWindow().onMoved(() => reportBounds()).then(fn => { unlisten = fn; });
+    let unlistenMoved: (() => void) | null = null;
+    let unlistenResized: (() => void) | null = null;
+    getCurrentWindow().onMoved(() => reportBounds()).then(fn => { unlistenMoved = fn; });
+    // A native window resize (e.g. maximizing/restoring, or snapping to a
+    // screen half) doesn't reliably fire the DOM 'resize' event promptly —
+    // without this, the terminal's native HWND was left at its old size/
+    // position until something else (a manual pane resize) happened to
+    // trigger a fresh bounds report.
+    getCurrentWindow().onResized(() => reportBounds()).then(fn => { unlistenResized = fn; });
     return () => {
       window.removeEventListener('resize', reportBounds);
-      unlisten?.();
+      unlistenMoved?.();
+      unlistenResized?.();
     };
   }, [reportBounds]);
 

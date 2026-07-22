@@ -163,9 +163,17 @@ export function BrowserPane({ browserId, initialUrl }: Props) {
 
   useEffect(() => {
     window.addEventListener('resize', reportBounds);
-    let unlisten: (() => void) | null = null;
-    getCurrentWindow().onMoved(() => reportBounds()).then(fn => { unlisten = fn; });
-    return () => { window.removeEventListener('resize', reportBounds); unlisten?.(); };
+    let unlistenMoved: (() => void) | null = null;
+    let unlistenResized: (() => void) | null = null;
+    getCurrentWindow().onMoved(() => reportBounds()).then(fn => { unlistenMoved = fn; });
+    // See TerminalPane.tsx's identical listener for why onResized matters —
+    // a maximize/restore doesn't reliably fire the DOM 'resize' event.
+    getCurrentWindow().onResized(() => reportBounds()).then(fn => { unlistenResized = fn; });
+    return () => {
+      window.removeEventListener('resize', reportBounds);
+      unlistenMoved?.();
+      unlistenResized?.();
+    };
   }, [reportBounds]);
 
   // Route URL change events to this pane only

@@ -417,6 +417,12 @@ impl TerminalPane {
         // into one render per tick.
         let render_dirty = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let blink_on      = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        // Only the focused pane should spend cycles blinking its cursor —
+        // updated from WM_SETFOCUS/WM_KILLFOCUS via WindowMessage::FocusChanged
+        // in the input task below. Defaults to focused so a newly created
+        // pane's cursor is visible immediately, before any focus event
+        // round-trips through the Win32 message loop.
+        let is_focused    = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         self.win      = Some(win);
         self.renderer = Some(renderer.clone());
@@ -499,17 +505,24 @@ impl TerminalPane {
             });
         }
 
-        // ── Task: Cursor blink (~530ms period) ───────────────────────────────
+        // ── Task: Cursor blink (~530ms period, focused pane only) ─────────────
         // Just flips a shared flag and marks dirty — no renderer/grid access
         // needed here at all; the render task applies it before each render.
-        let dirty_blink = render_dirty.clone();
-        let blink_flip   = blink_on.clone();
+        // Skipped entirely while unfocused: an unfocused pane has no reason
+        // to keep waking the render loop every 530ms, and its cursor just
+        // stays steady until it regains focus.
+        let dirty_blink   = render_dirty.clone();
+        let blink_flip    = blink_on.clone();
+        let focused_blink = is_focused.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(
                 std::time::Duration::from_millis(530)
             );
             loop {
                 interval.tick().await;
+                if !focused_blink.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue;
+                }
                 let was_on = blink_flip.load(std::sync::atomic::Ordering::Relaxed);
                 blink_flip.store(!was_on, std::sync::atomic::Ordering::Relaxed);
                 dirty_blink.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -562,10 +575,12 @@ impl TerminalPane {
         }
 
         // ── Task: Win32 mouse events → scroll / click notification ───────────
-        let grid_inp   = self.grid.clone();
-        let id_click   = self.info.id.clone();
-        let app_click  = app.clone();
-        let dirty_inp  = render_dirty.clone();
+        let grid_inp     = self.grid.clone();
+        let id_click     = self.info.id.clone();
+        let app_click    = app.clone();
+        let dirty_inp    = render_dirty.clone();
+        let focused_inp  = is_focused.clone();
+        let blink_inp    = blink_on.clone();
 
         tokio::spawn(async move {
             use crate::terminal::input::InputEvent;
@@ -630,6 +645,14 @@ impl TerminalPane {
                     WindowMessage::Resize(_, _) => {
                         // Handled in set_bounds via ResizeObserver
                     }
+                    // Focus changed — gate the blink task (see above) and make
+                    // sure the cursor is visible (not mid-"off" blink phase)
+                    // right at the transition either way.
+                    WindowMessage::FocusChanged(focused) => {
+                        focused_inp.store(focused, std::sync::atomic::Ordering::Relaxed);
+                        blink_inp.store(true, std::sync::atomic::Ordering::Relaxed);
+                        dirty_inp.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     WindowMessage::Close => break,
                     // Input/Paste are now handled entirely in React
                     _ => {}
@@ -644,23 +667,17 @@ impl TerminalPane {
         self.pty.write(data)
     }
 
-    /// Retry a `try_lock` a few times with a short sleep between attempts,
-    /// rather than silently no-op'ing on the first miss. `set_bounds`/
-    /// `set_theme`/`set_font_size` are sync methods (called from Tauri
-    /// command handlers) so they can't `.await` the tokio Mutex — but with
-    /// the dedicated render task now the only *regular* contender for the
-    /// renderer lock (see `init_renderer`), a collision here is rare and the
-    /// render task's own critical section is brief, so a bounded spin is far
-    /// better than dropping a user-triggered resize/theme/font-size change.
-    fn lock_renderer_retry(r: &tokio::sync::Mutex<GpuRenderer>) -> Option<tokio::sync::MutexGuard<'_, GpuRenderer>> {
-        for _ in 0..5 {
-            if let Ok(guard) = r.try_lock() {
-                return Some(guard);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        r.try_lock().ok()
-    }
+    // NOTE: set_bounds/set_theme/set_font_size use plain try_lock (no retry),
+    // deliberately. They're called from Tauri command handlers *while still
+    // holding the global `Mutex<AppState>`* (see commands.rs's
+    // set_terminal_bounds/update_settings), so anything that blocks here —
+    // including a bounded sleep-and-retry loop, which a prior version of
+    // this code had — blocks every other command that needs that same
+    // global lock, including keyboard input (write_terminal). That is a far
+    // worse jank source than the rare dropped resize/theme/font-size update
+    // a miss here causes: set_bounds fires again almost immediately during
+    // any real drag, and a missed theme/font application is corrected by the
+    // next resize or redraw.
 
     pub fn set_bounds(&mut self, bounds: &PaneBounds) {
         // Always reposition the window (even if tiny — keeps it in sync with layout).
@@ -677,7 +694,7 @@ impl TerminalPane {
 
         // Use actual font metrics from renderer; fall back to defaults before init.
         let (cell_w, cell_h) = if let Some(r) = &self.renderer {
-            if let Some(r) = Self::lock_renderer_retry(r) { (r.font.cell_width, r.font.cell_height) }
+            if let Ok(r) = r.try_lock() { (r.font.cell_width, r.font.cell_height) }
             else { (8.0f32, 16.0f32) }
         } else { (8.0f32, 16.0f32) };
 
@@ -686,7 +703,7 @@ impl TerminalPane {
 
         // Resize the wgpu surface to match the new pixel dimensions.
         if let Some(r) = &self.renderer {
-            if let Some(mut renderer) = Self::lock_renderer_retry(r) {
+            if let Ok(mut renderer) = r.try_lock() {
                 renderer.resize(bounds.width as u32, bounds.height as u32);
             }
         }
@@ -703,7 +720,7 @@ impl TerminalPane {
 
         // Re-render with the new surface size so the display isn't stale.
         if let Some(r) = &self.renderer {
-            if let Some(mut renderer) = Self::lock_renderer_retry(r) {
+            if let Ok(mut renderer) = r.try_lock() {
                 let snap = self.grid.lock().snapshot();
                 let _ = renderer.render(&snap);
             }
@@ -741,7 +758,7 @@ impl TerminalPane {
     /// swaps the renderer's theme and re-renders the current grid snapshot.
     pub fn set_theme(&mut self, theme: Theme) {
         if let Some(r) = &self.renderer {
-            if let Some(mut renderer) = Self::lock_renderer_retry(r) {
+            if let Ok(mut renderer) = r.try_lock() {
                 renderer.theme = theme;
                 let snap = self.grid.lock().snapshot();
                 let _ = renderer.render(&snap);
@@ -754,7 +771,7 @@ impl TerminalPane {
     /// PTY/grid if they changed (mirrors the resize logic in `set_bounds`).
     pub fn set_font_size(&mut self, font_size: f32) {
         if let Some(r) = &self.renderer {
-            if let Some(mut renderer) = Self::lock_renderer_retry(r) {
+            if let Ok(mut renderer) = r.try_lock() {
                 renderer.set_font_size(font_size);
                 let cell_w = renderer.font.cell_width;
                 let cell_h = renderer.font.cell_height;

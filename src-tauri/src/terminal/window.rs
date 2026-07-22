@@ -74,6 +74,8 @@ pub enum WindowMessage {
     SelectionUpdate(i32, i32),
     /// Ctrl+Shift+C — copy the current selection to the clipboard.
     CopySelection,
+    /// This HWND gained (true) or lost (false) keyboard focus.
+    FocusChanged(bool),
 }
 
 pub struct TerminalWindow {
@@ -408,12 +410,20 @@ unsafe extern "system" fn terminal_wnd_proc(
             LRESULT(0)
         }
 
+        // This HWND gained keyboard focus — let the pane's blink task know so
+        // only the focused terminal spends cycles blinking its cursor.
+        WM_SETFOCUS => {
+            send_msg(hwnd, WindowMessage::FocusChanged(true));
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+
         // Cancel prefix mode when this HWND loses focus
         WM_KILLFOCUS => {
             if PREFIX_ACTIVE.swap(false, Ordering::Relaxed) {
                 send_msg(hwnd, WindowMessage::PrefixDeactivated);
             }
             set_dragging(hwnd, false);
+            send_msg(hwnd, WindowMessage::FocusChanged(false));
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
 

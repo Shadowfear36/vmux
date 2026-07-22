@@ -1104,9 +1104,34 @@ export const useStore = create<AppStore>((set, get) => ({
     const browserId = crypto.randomUUID();
     const newLeaf = makeBrowserLeaf(browserId);
     set(s => {
-      const tree = s.splitTrees[activeTabId];
-      if (!tree) return s;
-      const targetId = focusedTerminalId ?? null;
+      let tree = s.splitTrees[activeTabId];
+      // No tree yet for this tab (e.g. it still has only its original,
+      // never-split terminal, so TabView's own sync effect never had a
+      // reason to build one) — this used to just bail out entirely, which
+      // is exactly what made agent-triggered browser-open silently do
+      // nothing: the OSC handler reported success (the store call did run)
+      // but nothing was actually added to the layout. Build a flat tree
+      // from the tab's existing panes first, mirroring TabView.tsx's own
+      // fallback, so there's always something to attach the browser leaf to.
+      if (!tree) {
+        const ws = s.workspaces.find(w => w.id === s.activeWorkspaceId);
+        const tab = ws?.tabs.find(t => t.id === activeTabId);
+        const paneIds = (tab?.panes ?? [])
+          .filter(p => p.kind.type === 'terminal')
+          .map(p => p.kind.type === 'terminal' ? p.kind.terminal_id : '')
+          .filter(Boolean);
+        if (paneIds.length === 0) return s;
+        tree = makeLeaf(paneIds[0]);
+        for (let i = 1; i < paneIds.length; i++) {
+          tree = { type: 'split', direction: 'horizontal', children: [tree, makeLeaf(paneIds[i])], ratio: i / (i + 1) };
+        }
+      }
+      // Only split relative to focusedTerminalId if it's actually in *this*
+      // tab's tree — a stale/cross-tab focusedTerminalId would otherwise
+      // make splitNodeWith silently return the tree unchanged (no leaf ever
+      // matches), which is the same "reported success, nothing appeared"
+      // failure mode as the missing-tree case above.
+      const targetId = focusedTerminalId && findLeaf(tree, focusedTerminalId) ? focusedTerminalId : null;
       const newTree = targetId
         ? splitNodeWith(tree, targetId, newLeaf, direction)
         : { type: 'split' as const, direction, children: [tree, newLeaf] as [SplitNode, SplitLeaf], ratio: 0.5 };

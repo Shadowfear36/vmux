@@ -256,9 +256,15 @@ export default function App() {
     const unsubs: Promise<() => void>[] = [];
     unsubs.push(listen<{ terminalId: string; url: string }>('agent:browser-open', ({ payload }) => {
       const store = useStore.getState();
-      // Open a browser pane if none exists, then navigate to the URL
-      const hasAnyBrowser = Object.values(store.splitTrees).some(tree => getBrowserPaneIds(tree).length > 0);
-      if (!hasAnyBrowser) store.splitFocusedPaneWithBrowser('horizontal');
+      // Open a browser pane in the *currently visible* tab if it doesn't
+      // already have one. Checking across every tab (as this used to) meant
+      // a browser pane sitting in some other, not-currently-viewed tab
+      // counted as "already have one" — the agent would report success
+      // (the existing pane really did navigate) while the user, looking at
+      // a different tab, saw nothing happen.
+      const activeTree = store.activeTabId ? store.splitTrees[store.activeTabId] : undefined;
+      const hasBrowserInActiveTab = activeTree ? getBrowserPaneIds(activeTree).length > 0 : false;
+      if (!hasBrowserInActiveTab) store.splitFocusedPaneWithBrowser('horizontal');
       // Emit a navigate event for the first browser pane
       setTimeout(() => {
         import('@tauri-apps/api/event').then(({ emit }) => emit('ipc:browser-navigate', { url: payload.url }));

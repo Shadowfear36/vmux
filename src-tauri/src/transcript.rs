@@ -58,45 +58,72 @@ fn project_name_from_path(path: &str) -> String {
         .to_string()
 }
 
-/// Extract text content from a Claude message's content field.
-/// Handles both string content and array-of-blocks content.
-fn extract_text(content: &Value) -> String {
+/// Extract zero or more (role, content) chunks from a single message's content
+/// field. A message can contain several content blocks of different kinds —
+/// plain text, a tool call, a tool result — and each becomes its own chunk so
+/// none of it is silently merged away or dropped (previously only `type:
+/// "text"` blocks were kept; tool_use/tool_result blocks vanished entirely).
+fn extract_entries(role: &str, content: &Value) -> Vec<(String, String)> {
     match content {
-        Value::String(s) => s.clone(),
+        Value::String(s) if !s.trim().is_empty() => vec![(role.to_string(), s.clone())],
+        Value::String(_) => vec![],
         Value::Array(blocks) => {
-            blocks.iter()
-                .filter_map(|block| {
-                    if block.get("type")?.as_str()? == "text" {
-                        block.get("text")?.as_str().map(|s| s.to_string())
-                    } else {
-                        None
+            let mut out = Vec::new();
+            for block in blocks {
+                match block.get("type").and_then(|t| t.as_str()) {
+                    Some("text") => {
+                        if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                            if !t.trim().is_empty() {
+                                out.push((role.to_string(), t.to_string()));
+                            }
+                        }
                     }
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+                    Some("tool_use") => {
+                        let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                        let input = block.get("input").map(|v| v.to_string()).unwrap_or_default();
+                        out.push(("tool_use".to_string(), format!("[{name}] {input}")));
+                    }
+                    Some("tool_result") => {
+                        let text = match block.get("content") {
+                            Some(Value::String(s)) => s.clone(),
+                            Some(Value::Array(inner)) => inner.iter()
+                                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            _ => String::new(),
+                        };
+                        if !text.trim().is_empty() {
+                            out.push(("tool_result".to_string(), text));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out
         }
-        _ => String::new(),
+        _ => vec![],
     }
 }
 
 /// Import a single Claude JSONL transcript file into the context store.
-/// Returns the number of chunks imported, or 0 if already imported.
+/// Supports incremental re-import: a session that was already imported once
+/// and has since grown (more turns appended to the same JSONL) only has its
+/// new tail appended, rather than being skipped forever.
+/// Returns the number of *new* chunks imported.
 pub fn import_transcript(store: &ContextStore, jsonl_path: &Path) -> Result<usize> {
     let session_id = jsonl_path.file_stem()
         .and_then(|s| s.to_str())
         .ok_or_else(|| anyhow::anyhow!("invalid jsonl filename"))?;
 
-    // Skip if already imported
-    if store.conversation_exists_by_session(session_id)? {
-        return Ok(0);
-    }
+    let existing = store.get_conversation_by_session(session_id)?;
+    let already_imported_count = match &existing {
+        Some(conv) => store.get_chunks(&conv.id)?.len(),
+        None => 0,
+    };
 
     let project_path = project_path_from_jsonl(jsonl_path)
         .ok_or_else(|| anyhow::anyhow!("cannot determine project path"))?;
     let project_name = project_name_from_path(&project_path);
-
-    // Ensure project exists
-    let project = store.ensure_project(&project_path, &project_name)?;
 
     // Read and parse JSONL
     let file = fs::File::open(jsonl_path)?;
@@ -121,13 +148,14 @@ pub fn import_transcript(store: &ContextStore, jsonl_path: &Path) -> Result<usiz
             "user" | "assistant" => {
                 if let Some(message) = entry.get("message") {
                     let role = message.get("role").and_then(|r| r.as_str()).unwrap_or(entry_type);
-                    let content = message.get("content").map(extract_text).unwrap_or_default();
-                    if !content.trim().is_empty() {
-                        // Capture first user message as title
-                        if title.is_none() && role == "user" {
-                            title = Some(content.chars().take(80).collect());
+                    if let Some(content) = message.get("content") {
+                        for (chunk_role, chunk_content) in extract_entries(role, content) {
+                            // Capture first genuine user text as title (not a tool_result blob)
+                            if title.is_none() && chunk_role == "user" {
+                                title = Some(chunk_content.chars().take(80).collect());
+                            }
+                            chunks.push((chunk_role, chunk_content));
                         }
-                        chunks.push((role.to_string(), content));
                     }
                 }
                 // Capture timestamp
@@ -155,26 +183,26 @@ pub fn import_transcript(store: &ContextStore, jsonl_path: &Path) -> Result<usiz
         }
     }
 
-    if chunks.is_empty() {
+    if chunks.len() <= already_imported_count {
         return Ok(0);
     }
 
-    // Create conversation
-    let conv = store.create_conversation(
-        &project.id,
-        "claude",
-        Some(session_id),
-        title.as_deref(),
-        "transcript",
-    )?;
+    let conv = match existing {
+        Some(conv) => conv,
+        None => {
+            let project = store.ensure_project(&project_path, &project_name)?;
+            store.create_conversation(&project.id, "claude", Some(session_id), title.as_deref(), "transcript")?
+        }
+    };
 
-    // Insert chunks
-    for (i, (role, content)) in chunks.iter().enumerate() {
-        store.add_chunk(&conv.id, i as i32, role, content)?;
+    // Insert only the new tail
+    let new_chunks = &chunks[already_imported_count..];
+    for (i, (role, content)) in new_chunks.iter().enumerate() {
+        store.add_chunk(&conv.id, (already_imported_count + i) as i32, role, content)?;
     }
 
-    let count = chunks.len();
-    log::info!("imported transcript {session_id}: {count} chunks, title={:?}", title);
+    let count = new_chunks.len();
+    log::info!("imported transcript {session_id}: {count} new chunks, title={:?}", title);
     Ok(count)
 }
 

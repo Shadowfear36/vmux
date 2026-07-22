@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { ask } from '@tauri-apps/plugin-dialog';
 import type { TerminalInfo, ShellProfile, AgentProfile, Workspace, Tab, Pane, PaneKind, PaneBounds, ContextEntry, BrowserTabInfo, WorktreeInfo, Settings } from './types';
-import { removeNode, splitNode, splitNodeWith, insertAdjacent, makeLeaf, makeBrowserLeaf, type SplitNode, type SplitLeaf } from './components/SplitTree';
+import { removeNode, splitNode, splitNodeWith, insertAdjacent, makeLeaf, makeBrowserLeaf, findLeaf, type SplitNode, type SplitLeaf } from './components/SplitTree';
 
 const CLAUDE_HOOKS_PROMPTED_KEY = 'vmux-claude-hooks-prompted';
 
@@ -78,6 +78,12 @@ interface AppStore {
   startPaneDrag: (terminalId: string) => void;
   endPaneDrag: () => void;
   dropPaneOnTarget: (targetId: string, side: 'left' | 'right' | 'top' | 'bottom') => void;
+
+  // Browser pane sidebar metadata + close (browser panes live only in splitTrees,
+  // not in the backend `panes` table like terminals do)
+  browserPaneTitles: Record<string, string>;
+  setBrowserPaneTitle: (browserId: string, title: string) => void;
+  closeBrowserPane: (browserId: string) => void;
 
   // Actions
   loadWorkspaces: () => Promise<void>;
@@ -158,6 +164,14 @@ interface AppStore {
   toggleSettings: () => void;
   loadSettings: () => Promise<void>;
   updateSettings: (settings: Settings) => Promise<void>;
+
+  // Claude Code browser-control skill (~/.claude/skills/vmux-browser/)
+  hasVmuxBrowserSkill: () => Promise<boolean>;
+  installVmuxBrowserSkill: () => Promise<void>;
+
+  // Claude Code context-search skill (~/.claude/skills/vmux-context/)
+  hasVmuxContextSkill: () => Promise<boolean>;
+  installVmuxContextSkill: () => Promise<void>;
 }
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -254,6 +268,7 @@ export const useStore = create<AppStore>((set, get) => ({
   showGitDiff: false,
   splitTrees: {},
   draggingTerminalId: null,
+  browserPaneTitles: {},
   claudeSessionsByDir: {},
 
   loadWorkspaces: async () => {
@@ -927,10 +942,37 @@ export const useStore = create<AppStore>((set, get) => ({
     const tree = splitTrees[activeTabId];
     if (!tree) { set({ draggingTerminalId: null }); return; }
     const sourceId = draggingTerminalId;
+    // Preserve the dragged pane's own kind (terminal vs browser) instead of
+    // always re-wrapping it as a terminal leaf.
+    const sourceLeaf = findLeaf(tree, sourceId);
+    if (!sourceLeaf) { set({ draggingTerminalId: null }); return; }
     const withoutSource = removeNode(tree, sourceId);
     if (!withoutSource) { set({ draggingTerminalId: null }); return; }
-    const newTree = insertAdjacent(withoutSource, targetId, makeLeaf(sourceId), side);
+    const newTree = insertAdjacent(withoutSource, targetId, sourceLeaf, side);
     set(s => ({ splitTrees: { ...s.splitTrees, [activeTabId]: newTree }, draggingTerminalId: null }));
+    get().saveWorkspaceState();
+  },
+
+  setBrowserPaneTitle: (browserId, title) => {
+    set(s => ({ browserPaneTitles: { ...s.browserPaneTitles, [browserId]: title } }));
+  },
+
+  closeBrowserPane: (browserId) => {
+    invoke('close_browser', { browserId }).catch(() => {});
+    set(s => {
+      const splitTrees = { ...s.splitTrees };
+      for (const [tabId, tree] of Object.entries(splitTrees)) {
+        const updated = removeNode(tree as SplitNode, browserId);
+        if (updated) splitTrees[tabId] = updated;
+        else delete splitTrees[tabId];
+      }
+      const { [browserId]: _removed, ...browserPaneTitles } = s.browserPaneTitles;
+      return {
+        splitTrees,
+        browserPaneTitles,
+        focusedTerminalId: s.focusedTerminalId === browserId ? null : s.focusedTerminalId,
+      };
+    });
     get().saveWorkspaceState();
   },
 
@@ -1130,6 +1172,12 @@ export const useStore = create<AppStore>((set, get) => ({
     await invoke('update_settings', { settings });
     set({ settings });
   },
+
+  hasVmuxBrowserSkill: async () => invoke('has_vmux_browser_skill'),
+  installVmuxBrowserSkill: async () => { await invoke('install_vmux_browser_skill'); },
+
+  hasVmuxContextSkill: async () => invoke('has_vmux_context_skill'),
+  installVmuxContextSkill: async () => { await invoke('install_vmux_context_skill'); },
 }));
 
 /** Recursively remap terminal IDs in a split tree using an old→new ID mapping.

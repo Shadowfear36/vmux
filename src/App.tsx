@@ -268,7 +268,17 @@ export default function App() {
       import('@tauri-apps/api/event').then(({ emit }) => emit('ipc:browser-navigate', { url: payload.url }));
     }));
     unsubs.push(listen<{ terminalId: string; js: string }>('agent:browser-eval', ({ payload }) => {
-      useStore.getState().browserEvaluate(payload.js);
+      // Broadcast to every open browser pane, same "act on whatever's open"
+      // semantics as browser-open/browser-navigate above. Each BrowserPane
+      // instance runs the eval against its own browserId — see the
+      // `ipc:browser-eval` listener in BrowserPane.tsx.
+      import('@tauri-apps/api/event').then(({ emit }) => emit('ipc:browser-eval', { js: payload.js }));
+    }));
+    unsubs.push(listen('agent:browser-close', () => {
+      const store = useStore.getState();
+      for (const tree of Object.values(store.splitTrees)) {
+        for (const id of getBrowserPaneIds(tree)) store.closeBrowserPane(id);
+      }
     }));
     return () => { unsubs.forEach(u => u.then(f => f())); };
   }, []);

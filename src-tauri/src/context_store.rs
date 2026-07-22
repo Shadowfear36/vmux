@@ -50,7 +50,7 @@ pub struct ConversationChunk {
     pub id: String,
     pub conversation_id: String,
     pub chunk_index: i32,
-    pub role: String, // "user", "assistant", "tool_result"
+    pub role: String, // "user", "assistant", "tool_use", "tool_result"
     pub content: String,
     pub has_embedding: bool,
     pub created_at: i64,
@@ -324,13 +324,19 @@ impl ContextStore {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Check if a conversation with this session_id already exists (avoid duplicate imports).
-    pub fn conversation_exists_by_session(&self, session_id: &str) -> Result<bool> {
-        let count: i64 = self.db.query_row(
-            "SELECT COUNT(*) FROM conversations WHERE session_id=?1",
-            params![session_id], |row| row.get(0),
+    /// Look up the conversation for a given session_id, if one was already imported.
+    /// Used to support incremental re-import of a transcript that has grown since
+    /// its last import, rather than skipping the whole file forever.
+    pub fn get_conversation_by_session(&self, session_id: &str) -> Result<Option<Conversation>> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, project_id, agent_type, session_id, title, started_at, ended_at, source, metadata
+             FROM conversations WHERE session_id=?1 LIMIT 1"
         )?;
-        Ok(count > 0)
+        let mut rows = stmt.query_map(params![session_id], row_to_conversation)?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
     }
 
     // ── Conversation Chunks ──────────────────────────────────────────────────

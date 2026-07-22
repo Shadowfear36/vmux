@@ -6,6 +6,29 @@ use tokio::sync::mpsc;
 
 use super::shell::ShellProfile;
 
+/// Prepend the directory containing the running vmux executable to a PATH
+/// value. vmuxctl.exe is built alongside vmux.exe (both land in the same
+/// target/debug or target/release output dir in dev, and would sit next to
+/// each other in a properly-bundled install too) but nothing else puts that
+/// directory on PATH — a spawned shell only inherits vmux's own PATH, which
+/// is whatever launched `npm run tauri dev`/the installed app, not anywhere
+/// vmuxctl.exe lives. Without this, agents can never find `vmuxctl` on PATH.
+fn prepend_vmuxctl_dir(existing_path: &str) -> String {
+    match std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())) {
+        Some(exe_dir) => format!("{};{}", exe_dir.display(), existing_path),
+        None => existing_path.to_string(),
+    }
+}
+
+/// Apply the PATH-augmentation to a CommandBuilder, respecting any PATH the
+/// caller already set explicitly (e.g. via a shell profile's env overrides).
+fn augment_path(cmd: &mut CommandBuilder) {
+    let base = cmd.get_env("PATH")
+        .map(|v| v.to_string_lossy().to_string())
+        .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+    cmd.env("PATH", prepend_vmuxctl_dir(&base));
+}
+
 /// A running PTY session backed by ConPTY on Windows.
 pub struct PtySession {
     _master: Box<dyn MasterPty + Send>,
@@ -33,6 +56,7 @@ impl PtySession {
         for (key, val) in &shell.env {
             cmd.env(key, val);
         }
+        augment_path(&mut cmd);
         if let Some(dir) = working_dir {
             cmd.cwd(dir);
         } else {
@@ -88,6 +112,7 @@ impl PtySession {
         for (key, val) in env {
             cmd.env(key, val);
         }
+        augment_path(&mut cmd);
         if let Some(dir) = working_dir {
             cmd.cwd(dir);
         } else if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {

@@ -37,6 +37,9 @@ enum IpcRequest {
     BrowserNavigate { url: String },
     BrowserScreenshot { output_path: Option<String> },
     BrowserGetUrl,
+    BrowserEval { js: String },
+    ContextSearch { query: String, top_k: Option<usize> },
+    ContextGetConversation { conversation_id: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +50,22 @@ struct TerminalSummary {
 }
 
 #[derive(Debug, Deserialize)]
+struct ContextSearchHit {
+    conversation_id: String,
+    conversation_title: Option<String>,
+    project_name: String,
+    role: String,
+    score: f32,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContextChunkOut {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
 enum IpcResponse {
     Pong,
     Ok,
@@ -54,6 +73,9 @@ enum IpcResponse {
     Error(String),
     Screenshot { path: String },
     BrowserUrl { url: String },
+    BrowserEvalResult { ok: bool, value: String },
+    ContextSearchResults(Vec<ContextSearchHit>),
+    ContextConversation { title: Option<String>, project_name: String, chunks: Vec<ContextChunkOut> },
 }
 
 // ─── Framing (mirrors daemon_client::{write_framed, read_framed}) ──────────────
@@ -161,6 +183,71 @@ async fn cmd_browser_screenshot(output_path: Option<String>) -> Result<()> {
     }
 }
 
+/// vmux browser eval <js>
+///
+/// Unlike printing a `browser-eval` OSC escape sequence (fire-and-forget),
+/// this waits for the script's return value and prints it — the return
+/// value is whatever the JS expression evaluates to, JSON-encoded.
+async fn cmd_browser_eval(js: &str) -> Result<()> {
+    match ipc_call(IpcRequest::BrowserEval { js: js.to_string() }).await? {
+        IpcResponse::BrowserEvalResult { ok: true, value } => {
+            println!("{value}");
+            Ok(())
+        }
+        IpcResponse::BrowserEvalResult { ok: false, value } => {
+            bail!("script threw: {value}")
+        }
+        IpcResponse::Error(e) => bail!("vmux error: {e}"),
+        other => bail!("unexpected response: {other:?}"),
+    }
+}
+
+/// vmux context search <query> [--top-k N]
+async fn cmd_context_search(query: &str, top_k: Option<usize>) -> Result<()> {
+    match ipc_call(IpcRequest::ContextSearch { query: query.to_string(), top_k }).await? {
+        IpcResponse::ContextSearchResults(hits) => {
+            if hits.is_empty() {
+                println!("no matches");
+                return Ok(());
+            }
+            for (i, h) in hits.iter().enumerate() {
+                println!(
+                    "[{}] {:.0}%  {}  ({})  conversation_id={}",
+                    i + 1,
+                    h.score * 100.0,
+                    h.conversation_title.as_deref().unwrap_or("Untitled"),
+                    h.project_name,
+                    h.conversation_id,
+                );
+                println!("    role: {}", h.role);
+                println!("{}", h.content);
+                println!("---");
+            }
+            Ok(())
+        }
+        IpcResponse::Error(e) => bail!("vmux error: {e}"),
+        other => bail!("unexpected response: {other:?}"),
+    }
+}
+
+/// vmux context get <conversation_id>
+async fn cmd_context_get(conversation_id: &str) -> Result<()> {
+    match ipc_call(IpcRequest::ContextGetConversation { conversation_id: conversation_id.to_string() }).await? {
+        IpcResponse::ContextConversation { title, project_name, chunks } => {
+            println!("{} ({})", title.as_deref().unwrap_or("Untitled"), project_name);
+            println!("{}", "=".repeat(40));
+            for chunk in chunks {
+                println!("[{}]", chunk.role);
+                println!("{}", chunk.content);
+                println!("---");
+            }
+            Ok(())
+        }
+        IpcResponse::Error(e) => bail!("vmux error: {e}"),
+        other => bail!("unexpected response: {other:?}"),
+    }
+}
+
 /// vmux browser url
 async fn cmd_browser_url() -> Result<()> {
     match ipc_call(IpcRequest::BrowserGetUrl).await? {
@@ -190,6 +277,37 @@ async fn main() -> Result<()> {
         }
         Some("ping") => cmd_ping().await,
         Some("list") => cmd_list().await,
+        Some("context") => {
+            match args.get(2).map(String::as_str) {
+                Some("search") => {
+                    // Supports a trailing `--top-k N` flag anywhere after the query.
+                    let mut rest = args[3..].to_vec();
+                    let mut top_k = None;
+                    if let Some(pos) = rest.iter().position(|a| a == "--top-k") {
+                        if let Some(n) = rest.get(pos + 1).and_then(|s| s.parse::<usize>().ok()) {
+                            top_k = Some(n);
+                        }
+                        rest.drain(pos..(pos + 2).min(rest.len()));
+                    }
+                    let query = rest.join(" ");
+                    if query.is_empty() {
+                        bail!("usage: vmuxctl context search <query> [--top-k N]");
+                    }
+                    cmd_context_search(&query, top_k).await
+                }
+                Some("get") => {
+                    let id = args.get(3).ok_or_else(|| anyhow::anyhow!("usage: vmuxctl context get <conversation_id>"))?;
+                    cmd_context_get(id).await
+                }
+                _ => {
+                    eprintln!("vmuxctl context — search + retrieve conversation history and notes\n");
+                    eprintln!("usage:");
+                    eprintln!("  vmuxctl context search <query> [--top-k N]   semantic search across all history");
+                    eprintln!("  vmuxctl context get <conversation_id>         print a full conversation, in order");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("browser") => {
             match args.get(2).map(String::as_str) {
                 Some("navigate") => {
@@ -201,12 +319,20 @@ async fn main() -> Result<()> {
                     cmd_browser_screenshot(output_path).await
                 }
                 Some("url") => cmd_browser_url().await,
+                Some("eval") => {
+                    let js = args[3..].join(" ");
+                    if js.is_empty() {
+                        bail!("usage: vmuxctl browser eval <js>");
+                    }
+                    cmd_browser_eval(&js).await
+                }
                 _ => {
                     eprintln!("vmuxctl browser — browser pane control\n");
                     eprintln!("usage:");
                     eprintln!("  vmuxctl browser navigate <url>       navigate the browser to a URL");
                     eprintln!("  vmuxctl browser screenshot [path]     screenshot the browser (prints path)");
                     eprintln!("  vmuxctl browser url                   print the current URL");
+                    eprintln!("  vmuxctl browser eval <js>              run JS, print its return value");
                     std::process::exit(1);
                 }
             }
@@ -218,6 +344,7 @@ async fn main() -> Result<()> {
             eprintln!("  vmuxctl ping               check whether vmux is running");
             eprintln!("  vmuxctl list               list open terminal panes");
             eprintln!("  vmuxctl browser <cmd>      control the browser pane");
+            eprintln!("  vmuxctl context <cmd>      search + retrieve conversation history and notes");
             std::process::exit(1);
         }
     }

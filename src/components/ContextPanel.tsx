@@ -216,11 +216,30 @@ function ConversationsTab() {
 
       {selectedConv ? (
         <div className="ctx-list">
-          <button className="ctx-back-btn" onClick={() => setSelectedConv(null)}>Back to list</button>
+          <div className="ctx-toolbar" style={{ borderTop: 'none', paddingTop: 0 }}>
+            <button className="ctx-back-btn" onClick={() => setSelectedConv(null)}>Back to list</button>
+            {chunks.length > 0 && (
+              <button
+                className="ctx-action-btn"
+                onClick={() => navigator.clipboard.writeText(chunks.map(c => `${c.role}: ${c.content}`).join('\n\n'))}
+              >
+                Copy full conversation
+              </button>
+            )}
+          </div>
           <div className="ctx-conv-chunks">
             {chunks.map(chunk => (
               <div key={chunk.id} className={`ctx-chunk ctx-chunk-${chunk.role}`}>
-                <div className="ctx-chunk-role">{chunk.role}</div>
+                <div className="ctx-chunk-role">
+                  {chunk.role}
+                  <button
+                    className="ctx-action-btn"
+                    style={{ marginLeft: 8, fontSize: 10 }}
+                    onClick={() => navigator.clipboard.writeText(chunk.content)}
+                  >
+                    Copy
+                  </button>
+                </div>
                 <pre className="ctx-chunk-content">{chunk.content}</pre>
               </div>
             ))}
@@ -407,6 +426,19 @@ function SearchTab() {
             </div>
             <div className="ctx-entry-body">
               <pre className="ctx-entry-content">{r.chunk.content.slice(0, 500)}{r.chunk.content.length > 500 ? '...' : ''}</pre>
+              <div className="ctx-entry-actions">
+                <button className="ctx-action-btn" onClick={() => navigator.clipboard.writeText(r.chunk.content)}>Copy snippet</button>
+                <button className="ctx-action-btn" onClick={() => pasteIntoTerminal(r.chunk.content)}>Paste into terminal</button>
+                <button
+                  className="ctx-action-btn"
+                  onClick={async () => {
+                    const fullChunks = await invoke<ConversationChunk[]>('get_conversation_chunks', { conversationId: r.chunk.conversation_id });
+                    navigator.clipboard.writeText(fullChunks.map(c => `${c.role}: ${c.content}`).join('\n\n'));
+                  }}
+                >
+                  Copy full conversation
+                </button>
+              </div>
             </div>
           </div>
         ))}

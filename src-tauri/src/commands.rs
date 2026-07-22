@@ -1,4 +1,4 @@
-use tauri::{AppHandle, State, Emitter};
+use tauri::{AppHandle, State, Emitter, Manager};
 use serde::Serialize;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
@@ -280,6 +280,7 @@ pub fn create_agent_terminal(
     let agent = s.agents.iter().find(|a| a.id == agent_id)
         .ok_or_else(|| format!("agent not found: {agent_id}"))?
         .clone();
+    let working_dir_for_watcher = working_dir.clone();
     let result = s.terminals.spawn_agent(
         working_dir, &agent, session_name, resume_session,
         continue_session.unwrap_or(false),
@@ -293,6 +294,7 @@ pub fn create_agent_terminal(
                 crate::claude_hooks::start_notify_watcher(
                     info.id.clone(),
                     notify_path.clone(),
+                    working_dir_for_watcher,
                     app,
                 );
             }
@@ -315,6 +317,38 @@ pub fn has_vmux_hooks() -> bool {
 #[tauri::command]
 pub fn install_claude_hooks() -> Result<bool, String> {
     crate::claude_hooks::ensure_vmux_hooks().map_err(|e| e.to_string())
+}
+
+/// Check whether the vmux-browser Claude Code skill is already installed at
+/// ~/.claude/skills/vmux-browser/SKILL.md, without modifying anything.
+#[tauri::command]
+pub fn has_vmux_browser_skill() -> bool {
+    crate::agent_skills::has_vmux_browser_skill()
+}
+
+/// Install (or update) the vmux-browser skill into ~/.claude/skills/. Must
+/// only be called after explicit user consent (see the Settings panel) —
+/// this writes outside the project sandbox, to the user's shared Claude
+/// Code skills directory.
+#[tauri::command]
+pub fn install_vmux_browser_skill() -> Result<(), String> {
+    crate::agent_skills::install_vmux_browser_skill().map_err(|e| e.to_string())
+}
+
+/// Check whether the vmux-context Claude Code skill is already installed at
+/// ~/.claude/skills/vmux-context/SKILL.md, without modifying anything.
+#[tauri::command]
+pub fn has_vmux_context_skill() -> bool {
+    crate::agent_skills::has_vmux_context_skill()
+}
+
+/// Install (or update) the vmux-context skill into ~/.claude/skills/. Must
+/// only be called after explicit user consent (see the Settings panel) —
+/// this writes outside the project sandbox, to the user's shared Claude
+/// Code skills directory.
+#[tauri::command]
+pub fn install_vmux_context_skill() -> Result<(), String> {
+    crate::agent_skills::install_vmux_context_skill().map_err(|e| e.to_string())
 }
 
 // ─── Workspace commands ───────────────────────────────────────────────────────
@@ -623,6 +657,14 @@ fn create_browser_window(
     let url_parsed = tauri::Url::parse(url).map_err(|e| e.to_string())?;
     // Each pane gets a deterministic label so we can look it up later.
     let label = format!("browser-{}", browser_id);
+
+    // A previous window under this label may still be mid-teardown (destroy()
+    // tears down the native HWND but deregisters the label asynchronously on
+    // the main event loop), which would otherwise make the build() below fail
+    // with "a webview with label ... already exists". Force it out first.
+    if let Some(stale) = app.get_webview_window(&label) {
+        let _ = stale.destroy();
+    }
 
     let (screen_x, screen_y) = unsafe {
         use windows::Win32::Foundation::*;
@@ -1255,22 +1297,7 @@ pub async fn rag_search(
         let s = state.lock().map_err(|e| e.to_string())?;
         (s.context_db_path.clone(), s.embedding_config.clone())
     };
-    let top_k = top_k.unwrap_or(10);
-
-    // Step 1: embed the query (async, no DB)
-    let provider = crate::embeddings::create_provider(&config);
-    let query_embeddings = provider.embed(&[query.clone()])
-        .await.map_err(|e| e.to_string())?;
-    let query_vec = query_embeddings.into_iter().next()
-        .ok_or("empty embedding result")?;
-
-    // Step 2: search DB (sync, on blocking thread)
-    tokio::task::spawn_blocking(move || {
-        let store = crate::context_store::ContextStore::new(&db_path)
-            .map_err(|e| e.to_string())?;
-        crate::rag::search_with_embedding(&store, &query_vec, project_id.as_deref(), top_k)
-            .map_err(|e| e.to_string())
-    }).await.map_err(|e| e.to_string())?
+    crate::rag::run_search(db_path, config, query, project_id, top_k.unwrap_or(10)).await
 }
 
 #[tauri::command]

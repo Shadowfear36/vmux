@@ -6,6 +6,11 @@
   background: #1a1b26;
 }
 
+/* Dim the pane being dragged so the user can see it's the source */
+.browser-pane-drag-source {
+  opacity: 0.55;
+}
+
 /* Browser tab bar */
 .browser-tabbar {
   display: flex;

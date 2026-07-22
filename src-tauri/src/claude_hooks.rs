@@ -13,8 +13,10 @@ use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::state::AppState;
 
 // ─── Hook Installation ──────────────────────────────────────────────────────
 
@@ -129,8 +131,11 @@ static WATCHERS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Arc<Atomic
 
 /// Start watching a notify file for Claude hook events.
 /// Spawns a background thread that polls the file every 500ms.
-/// Events are emitted as `claude:event` Tauri events.
-pub fn start_notify_watcher(terminal_id: String, notify_path: String, app: AppHandle) {
+/// Events are emitted as `claude:event` Tauri events. If `working_dir` is
+/// given, each event also triggers a scoped re-import of that project's
+/// Claude transcripts, so History picks up new turns without the user ever
+/// clicking "Import Claude".
+pub fn start_notify_watcher(terminal_id: String, notify_path: String, working_dir: Option<String>, app: AppHandle) {
     let stop = Arc::new(AtomicBool::new(false));
 
     // Register the stop flag
@@ -181,6 +186,19 @@ pub fn start_notify_watcher(terminal_id: String, notify_path: String, app: AppHa
                             "data": data,
                         }));
                         log::debug!("claude event: {event} for {tid}");
+
+                        if let Some(dir) = &working_dir {
+                            let state = app.state::<Mutex<AppState>>();
+                            let db_path = state.lock().unwrap().context_db_path.clone();
+                            match crate::context_store::ContextStore::new(&db_path) {
+                                Ok(store) => match crate::transcript::import_all_transcripts_for_project(&store, dir) {
+                                    Ok(n) if n > 0 => log::debug!("auto-import after claude event: {n} new chunks"),
+                                    Ok(_) => {}
+                                    Err(e) => log::warn!("auto-import after claude event failed: {e}"),
+                                },
+                                Err(e) => log::warn!("auto-import: could not open context store: {e}"),
+                            }
+                        }
                     }
                 }
                 Err(e) => {

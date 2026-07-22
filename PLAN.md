@@ -108,6 +108,18 @@ Everything in that tier is now done. Remaining items are the bigger lifts: true 
 
 ---
 
+## Ideas for standing out with terminal-bound vibe coders
+
+Brainstormed after finishing the context-manager work — not scoped or started, just captured for later prioritization.
+
+- [ ] Cross-agent presence — let the agent in one pane see/query what another pane's agent is doing or said, so vmux becomes a coordination layer for multi-agent workflows instead of just a window manager for them
+- [ ] Session replay/diffing — pair the captured tool-call transcripts (History tab) with `git diff` at each point, so a user can scrub through "what did the agent do and why" like a debugger instead of reading a chat log
+- [ ] Auto-generated workspace brief — on opening a workspace, assemble recent notes + last conversation summary + `git status`/diff into one paste-ready block, killing the "let me re-explain everything" tax of switching terminals/agents mid-project
+- [ ] Attention triage across panes — a single status line showing which of N agent panes are blocked-on-you vs still working vs done, tmux-style but aimed at the actual pain point of running several agents at once
+- [ ] Shareable session links — export a workspace's context + diff as a link/bundle for handing off to a teammate or another Claude session, using the context store + worktrees that already exist
+
+---
+
 ## Architecture decisions locked in
 - Terminal rendering: wgpu + cosmic-text in native Win32 HWND (not xterm.js)
 - Shell: cmd.exe default, configurable

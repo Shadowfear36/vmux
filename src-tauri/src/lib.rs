@@ -14,6 +14,7 @@ mod rag;
 mod worktree;
 mod settings;
 mod ipc;
+mod agent_skills;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -54,7 +55,41 @@ pub fn run() {
             // Start the IPC control pipe so `vmux ping`, `vmux list`, etc. work.
             ipc::start_ipc_server(app.handle().clone());
 
+            // One-time startup backfill of Claude Code transcripts, so history
+            // shows up without needing the manual "Import Claude" button.
+            // Runs off the main thread so app startup isn't delayed; incremental
+            // re-import (see transcript::import_transcript) makes this cheap to
+            // repeat on every launch.
+            {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let state = app_handle.state::<Mutex<AppState>>();
+                    let db_path = state.lock().unwrap().context_db_path.clone();
+                    match context_store::ContextStore::new(&db_path) {
+                        Ok(store) => match transcript::import_all_transcripts(&store) {
+                            Ok(n) => log::info!("startup transcript import: {n} new chunks"),
+                            Err(e) => log::warn!("startup transcript import failed: {e}"),
+                        },
+                        Err(e) => log::warn!("startup transcript import: could not open context store: {e}"),
+                    }
+                });
+            }
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Browser panes each own a separate (hidden/tool-window) WebviewWindow
+            // that's only destroyed via the `close_browser` command, which fires
+            // from a React effect cleanup — that cleanup never runs when the whole
+            // app is torn down by the OS. Tauri only auto-exits the process once
+            // every managed window is closed, so a leftover browser window silently
+            // keeps the process alive after the main window's X button is clicked.
+            // Force a real exit here so the red X always works.
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { .. } = event {
+                    window.app_handle().exit(0);
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_shells,
@@ -122,6 +157,10 @@ pub fn run() {
             commands::list_directory,
             commands::has_vmux_hooks,
             commands::install_claude_hooks,
+            commands::has_vmux_browser_skill,
+            commands::install_vmux_browser_skill,
+            commands::has_vmux_context_skill,
+            commands::install_vmux_context_skill,
             commands::list_projects,
             commands::ensure_project,
             commands::list_conversations,

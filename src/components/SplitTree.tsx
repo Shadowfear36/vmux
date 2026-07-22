@@ -105,6 +105,14 @@ export function insertAdjacent(
   };
 }
 
+/** Find a leaf node (terminal or browser) by its pane ID. */
+export function findLeaf(tree: SplitNode, paneId: string): SplitLeaf | null {
+  if (tree.type === 'leaf') {
+    return paneIdOf(tree) === paneId ? tree : null;
+  }
+  return findLeaf(tree.children[0], paneId) ?? findLeaf(tree.children[1], paneId);
+}
+
 /** Remove any pane (terminal or browser) from the tree by its ID. */
 export function removeNode(tree: SplitNode, paneId: string): SplitNode | null {
   if (tree.type === 'leaf') {

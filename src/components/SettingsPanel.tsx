@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { useStore } from '../store';
 import type { Settings } from '../types';
 import './SettingsPanel.css';
@@ -14,6 +15,10 @@ const THEMES = [
 
 export function SettingsPanel({ onClose }: Props) {
   const { settings, loadSettings, updateSettings, shells } = useStore();
+  const hasVmuxBrowserSkill = useStore(s => s.hasVmuxBrowserSkill);
+  const installVmuxBrowserSkill = useStore(s => s.installVmuxBrowserSkill);
+  const hasVmuxContextSkill = useStore(s => s.hasVmuxContextSkill);
+  const installVmuxContextSkill = useStore(s => s.installVmuxContextSkill);
   const [form, setForm] = useState<Settings | null>(settings);
   const [saving, setSaving] = useState(false);
   const [prefixKeyError, setPrefixKeyError] = useState<string | null>(null);
@@ -138,7 +143,81 @@ export function SettingsPanel({ onClose }: Props) {
               {saving ? 'Saving...' : 'Save'}
             </button>
           </div>
+
+          <SkillInstallRow
+            title="Claude Code: browser-control skill"
+            description={<>Lets Claude Code (running in any vmux terminal, in any project) open, navigate,
+              and close the browser pane. Installs a skill file to your global{' '}
+              <code>~/.claude/skills/</code> — not tied to this project.</>}
+            consentMessage="This writes ~/.claude/skills/vmux-browser/SKILL.md, a short doc teaching Claude Code
+              (and any other agent that reads Claude Code skills) how to control the vmux browser pane
+              from any terminal, in any project. It only adds/overwrites that one file. Install now?"
+            consentTitle="Install vmux browser skill?"
+            hasFn={hasVmuxBrowserSkill}
+            installFn={installVmuxBrowserSkill}
+          />
+
+          <SkillInstallRow
+            title="Claude Code: context-search skill"
+            description={<>Lets Claude Code search past conversation history and notes vmux has imported
+              (across every project), and pull a full past conversation once it finds the relevant one.
+              Installs a skill file to your global <code>~/.claude/skills/</code> — not tied to this project.</>}
+            consentMessage="This writes ~/.claude/skills/vmux-context/SKILL.md, a short doc teaching Claude Code
+              (and any other agent that reads Claude Code skills) how to search vmux's conversation history
+              and notes from any terminal, in any project. It only adds/overwrites that one file. Install now?"
+            consentTitle="Install vmux context-search skill?"
+            hasFn={hasVmuxContextSkill}
+            installFn={installVmuxContextSkill}
+          />
         </div>
+      </div>
+    </div>
+  );
+}
+
+interface SkillInstallRowProps {
+  title: string;
+  description: React.ReactNode;
+  consentMessage: string;
+  consentTitle: string;
+  hasFn: () => Promise<boolean>;
+  installFn: () => Promise<void>;
+}
+
+/** A single "install this Claude Code skill" row: status check, consent dialog, install/reinstall button. */
+function SkillInstallRow({ title, description, consentMessage, consentTitle, hasFn, installFn }: SkillInstallRowProps) {
+  const [installed, setInstalled] = useState<boolean | null>(null);
+  const [installing, setInstalling] = useState(false);
+
+  useEffect(() => {
+    hasFn().then(setInstalled).catch(() => setInstalled(false));
+  }, [hasFn]);
+
+  const handleInstall = async () => {
+    const consent = await ask(consentMessage, { title: consentTitle, kind: 'info' });
+    if (!consent) return;
+    setInstalling(true);
+    try {
+      await installFn();
+      setInstalled(true);
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  return (
+    <div className="settings-field" style={{ marginTop: 20, borderTop: '1px solid #292e42', paddingTop: 16 }}>
+      <span className="settings-label">{title}</span>
+      <div className="settings-hint settings-hint-small">{description}</div>
+      <div className="settings-actions" style={{ marginTop: 8 }}>
+        <button
+          className="settings-save-btn"
+          onClick={handleInstall}
+          disabled={installing || installed === null}
+        >
+          {installing ? 'Installing...' : installed ? 'Reinstall / update skill' : 'Install skill'}
+        </button>
+        {installed && <span style={{ marginLeft: 10, fontSize: 12, color: '#9ece6a' }}>Installed</span>}
       </div>
     </div>
   );

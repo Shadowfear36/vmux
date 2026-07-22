@@ -5,7 +5,7 @@
 use anyhow::Result;
 
 use crate::context_store::{ContextStore, SearchResult};
-use crate::embeddings;
+use crate::embeddings::{self, EmbeddingConfig};
 
 /// Search using a pre-computed query embedding vector (sync, no async).
 pub fn search_with_embedding(
@@ -40,4 +40,30 @@ pub fn search_with_embedding(
         .collect();
 
     Ok(results)
+}
+
+/// Full embed-then-search flow, shared by the `rag_search` Tauri command and
+/// the IPC `ContextSearch` handler (so an agent can `vmuxctl context search`
+/// the same history the Search tab searches). Embeds the query (async,
+/// network), then opens its own `ContextStore` connection on a blocking task
+/// to do the DB read — `rusqlite::Connection` isn't `Send`-safe across
+/// `.await`, so this can't just reuse a connection held on `AppState`.
+pub async fn run_search(
+    db_path: String,
+    config: EmbeddingConfig,
+    query: String,
+    project_id: Option<String>,
+    top_k: usize,
+) -> Result<Vec<SearchResult>, String> {
+    let provider = embeddings::create_provider(&config);
+    let query_embeddings = provider.embed(&[query])
+        .await.map_err(|e| e.to_string())?;
+    let query_vec = query_embeddings.into_iter().next()
+        .ok_or("empty embedding result")?;
+
+    tokio::task::spawn_blocking(move || {
+        let store = ContextStore::new(&db_path).map_err(|e| e.to_string())?;
+        search_with_embedding(&store, &query_vec, project_id.as_deref(), top_k)
+            .map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
 }

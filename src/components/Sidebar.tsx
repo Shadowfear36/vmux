@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useStore } from '../store';
+import { getBrowserPaneIds } from './SplitTree';
 import type { GitMeta } from '../types';
 import './Sidebar.css';
 
@@ -20,6 +21,7 @@ export function Sidebar({ onShowHelp }: SidebarProps) {
     showBrowser, toggleBrowser,
     showGitDiff, toggleGitDiff,
     toggleSettings,
+    splitTrees, browserPaneTitles, closeBrowserPane,
   } = useStore();
 
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
@@ -31,6 +33,11 @@ export function Sidebar({ onShowHelp }: SidebarProps) {
     .filter((p: any) => p.kind?.type === 'terminal')
     .map((p: any) => ({ pane: p, terminal: terminals[p.kind.terminal_id] }))
     .filter(({ terminal }: any) => terminal);
+
+  // Browser panes live only in the split tree (not the backend `panes` table)
+  const browserPaneIds = activeTabId && splitTrees[activeTabId]
+    ? getBrowserPaneIds(splitTrees[activeTabId])
+    : [];
 
   const addNewPane = (shellId?: string) => {
     if (!activeWorkspaceId || !activeTabId) return;
@@ -86,6 +93,21 @@ export function Sidebar({ onShowHelp }: SidebarProps) {
             </div>
           );
         })}
+
+        {browserPaneIds.map((id, i) => (
+          <div
+            key={id}
+            className={`tab-row ${focusedTerminalId === id ? 'tab-row-active' : ''}`}
+            onClick={() => focusTerminal(id)}
+          >
+            <span className="tab-icon">🌐</span>
+            <span className="tab-name">{browserPaneTitles[id] || `Browser ${i + 1}`}</span>
+            <button
+              className="tab-close-btn"
+              onClick={e => { e.stopPropagation(); closeBrowserPane(id); }}
+            >x</button>
+          </div>
+        ))}
       </div>
 
       {/* Agent launchers */}
@@ -442,6 +464,65 @@ export function TerminalMetaBar({ terminalId, onClose, onDragStart }: TerminalMe
             onPointerEnter={() => setDropHover('right')}
             onPointerLeave={() => setDropHover(null)}
             onPointerUp={() => { dropPaneOnTarget(terminalId, 'right'); setDropHover(null); }}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+interface BrowserMetaBarProps {
+  browserId: string;
+  title: string;
+  onClose?: () => void;
+  onDragStart?: (e: React.PointerEvent) => void;
+}
+
+/** Same drag-handle/close-button/drop-zone chrome as TerminalMetaBar, sized for a browser pane. */
+export function BrowserMetaBar({ browserId, title, onClose, onDragStart }: BrowserMetaBarProps) {
+  const draggingTerminalId = useStore(s => s.draggingTerminalId);
+  const dropPaneOnTarget = useStore(s => s.dropPaneOnTarget);
+  const [dropHover, setDropHover] = useState<'left' | 'right' | null>(null);
+
+  const isDragSource = draggingTerminalId === browserId;
+  const isDropTarget = draggingTerminalId !== null && !isDragSource;
+
+  return (
+    <div className={`terminal-meta-bar ${isDragSource ? 'terminal-meta-drag-source' : ''}`}>
+      {onDragStart && (
+        <div
+          className="pane-drag-handle"
+          onPointerDown={onDragStart}
+          title="Drag to rearrange"
+        >⠿</div>
+      )}
+
+      <span className="working-dir" title={title}>{title}</span>
+
+      {/* Spacer pushes close button to right */}
+      <div style={{ flex: 1 }} />
+
+      {onClose && (
+        <button
+          className="pane-close-btn"
+          onClick={onClose}
+          title="Close browser"
+        >×</button>
+      )}
+
+      {isDropTarget && (
+        <>
+          <div
+            className={`pane-drop-zone pane-drop-left ${dropHover === 'left' ? 'pane-drop-hover' : ''}`}
+            onPointerEnter={() => setDropHover('left')}
+            onPointerLeave={() => setDropHover(null)}
+            onPointerUp={() => { dropPaneOnTarget(browserId, 'left'); setDropHover(null); }}
+          />
+          <div
+            className={`pane-drop-zone pane-drop-right ${dropHover === 'right' ? 'pane-drop-hover' : ''}`}
+            onPointerEnter={() => setDropHover('right')}
+            onPointerLeave={() => setDropHover(null)}
+            onPointerUp={() => { dropPaneOnTarget(browserId, 'right'); setDropHover(null); }}
           />
         </>
       )}

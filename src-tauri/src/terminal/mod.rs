@@ -404,20 +404,30 @@ impl TerminalPane {
         self.pty.resize(cols, rows)?;
         self.grid.lock().resize(cols, rows);
 
-        let renderer       = Arc::new(tokio::sync::Mutex::new(renderer));
-        let renderer_pty   = renderer.clone();   // PTY output task
-        let renderer_inp   = renderer.clone();   // input task (scroll)
-        let renderer_blink = renderer.clone();   // cursor blink task
+        let renderer     = Arc::new(tokio::sync::Mutex::new(renderer));
+        let renderer_inp = renderer.clone();   // input task (selection metrics only)
+
+        // Coalescing: PTY output, the blink tick, and mouse input all used to
+        // grab the renderer and call .render() themselves, racing for the
+        // same lock via try_lock (silently dropped on contention) — meaning
+        // several full renders could fire for the same visual frame, or none
+        // at all if unlucky. Now they just flag "something changed"; a single
+        // dedicated task below is the only thing that ever calls .render(),
+        // at a fixed ~60fps cap, coalescing any number of pending changes
+        // into one render per tick.
+        let render_dirty = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let blink_on      = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         self.win      = Some(win);
-        self.renderer = Some(renderer);
+        self.renderer = Some(renderer.clone());
 
-        // ── Task: PTY output → VT state machine → render ─────────────────────
+        // ── Task: PTY output → VT state machine → mark dirty ─────────────────
         let id = self.info.id.clone();
         let grid_pty = self.grid.clone();
         let notif_tx = notification_tx;
         let app_osc = app.clone();
         let capture = self.capture_buf.clone();
+        let dirty_pty = render_dirty.clone();
         tokio::spawn(async move {
             use crate::osc::OscAction;
             let mut osc = OscParser::new();
@@ -464,16 +474,13 @@ impl TerminalPane {
                     }
                 }
 
-                // Drain any additional buffered chunks before rendering
-                // to batch multiple rapid outputs into one render call.
+                // Drain any additional buffered chunks before marking dirty,
+                // batching multiple rapid outputs into one eventual render.
                 grid_pty.lock().process(&bytes);
                 while let Ok(more) = rx.try_recv() {
                     grid_pty.lock().process(&more);
                 }
-                let snap = grid_pty.lock().snapshot();
-                if let Ok(mut r) = renderer_pty.try_lock() {
-                    let _ = r.render(&snap);
-                }
+                dirty_pty.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         });
 
@@ -493,17 +500,40 @@ impl TerminalPane {
         }
 
         // ── Task: Cursor blink (~530ms period) ───────────────────────────────
-        let grid_blink = self.grid.clone();
+        // Just flips a shared flag and marks dirty — no renderer/grid access
+        // needed here at all; the render task applies it before each render.
+        let dirty_blink = render_dirty.clone();
+        let blink_flip   = blink_on.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(
                 std::time::Duration::from_millis(530)
             );
             loop {
                 interval.tick().await;
-                // Use try_lock — yield to PTY output which is higher priority.
-                if let Ok(mut r) = renderer_blink.try_lock() {
-                    r.toggle_cursor_blink();
-                    let snap = grid_blink.lock().snapshot();
+                let was_on = blink_flip.load(std::sync::atomic::Ordering::Relaxed);
+                blink_flip.store(!was_on, std::sync::atomic::Ordering::Relaxed);
+                dirty_blink.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+
+        // ── Task: dedicated render loop (~60fps cap) ──────────────────────────
+        // The only remaining caller of GpuRenderer::render() — coalesces any
+        // number of dirty-marks from the tasks above into at most one render
+        // per tick, and (unlike the old try_lock call sites) always renders
+        // once dirty rather than silently skipping under contention, since
+        // it's now the sole regular locker.
+        let renderer_render = renderer.clone();
+        let grid_render      = self.grid.clone();
+        let dirty_render     = render_dirty.clone();
+        let blink_render     = blink_on.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(16));
+            loop {
+                interval.tick().await;
+                if dirty_render.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    let snap = grid_render.lock().snapshot();
+                    let mut r = renderer_render.lock().await;
+                    r.cursor_blink_on = blink_render.load(std::sync::atomic::Ordering::Relaxed);
                     let _ = r.render(&snap);
                 }
             }
@@ -535,42 +565,41 @@ impl TerminalPane {
         let grid_inp   = self.grid.clone();
         let id_click   = self.info.id.clone();
         let app_click  = app.clone();
+        let dirty_inp  = render_dirty.clone();
 
         tokio::spawn(async move {
             use crate::terminal::input::InputEvent;
             while let Some(msg) = win_rx.recv().await {
                 match msg {
-                    // Scroll wheel: move the view, re-render (no PTY write)
+                    // Scroll wheel: move the view, mark dirty (no PTY write)
                     WindowMessage::Input(InputEvent::Scroll(delta)) => {
                         grid_inp.lock().scroll(delta);
-                        let snap = grid_inp.lock().snapshot();
-                        if let Ok(mut r) = renderer_inp.try_lock() {
-                            let _ = r.render(&snap);
-                        }
+                        dirty_inp.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                     // Text selection: convert client pixel coords to a grid
-                    // cell using the renderer's actual font metrics.
+                    // cell using the renderer's actual font metrics. Getting
+                    // the metrics and mutating the selection always happens
+                    // (a brief `.lock().await`, not a skippable `try_lock`) —
+                    // this used to be guarded by the same try_lock used for
+                    // rendering, so a busy renderer silently dropped the
+                    // mouse-move *and* never extended the selection at all,
+                    // desyncing the highlight from the mouse and truncating
+                    // what Ctrl+Shift+C actually copied.
                     WindowMessage::SelectionStart(x, y) => {
-                        if let Ok(r) = renderer_inp.try_lock() {
-                            let (col, row) = pixel_to_cell(x, y, r.font.cell_width, r.font.cell_height);
-                            drop(r);
-                            grid_inp.lock().start_selection(col, row);
-                            let snap = grid_inp.lock().snapshot();
-                            if let Ok(mut r) = renderer_inp.try_lock() {
-                                let _ = r.render(&snap);
-                            }
-                        }
+                        let (col, row) = {
+                            let r = renderer_inp.lock().await;
+                            pixel_to_cell(x, y, r.font.cell_width, r.font.cell_height)
+                        };
+                        grid_inp.lock().start_selection(col, row);
+                        dirty_inp.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                     WindowMessage::SelectionUpdate(x, y) => {
-                        if let Ok(r) = renderer_inp.try_lock() {
-                            let (col, row) = pixel_to_cell(x, y, r.font.cell_width, r.font.cell_height);
-                            drop(r);
-                            grid_inp.lock().update_selection(col, row);
-                            let snap = grid_inp.lock().snapshot();
-                            if let Ok(mut r) = renderer_inp.try_lock() {
-                                let _ = r.render(&snap);
-                            }
-                        }
+                        let (col, row) = {
+                            let r = renderer_inp.lock().await;
+                            pixel_to_cell(x, y, r.font.cell_width, r.font.cell_height)
+                        };
+                        grid_inp.lock().update_selection(col, row);
+                        dirty_inp.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                     WindowMessage::CopySelection => {
                         if let Some(text) = grid_inp.lock().selection_text() {
@@ -615,6 +644,24 @@ impl TerminalPane {
         self.pty.write(data)
     }
 
+    /// Retry a `try_lock` a few times with a short sleep between attempts,
+    /// rather than silently no-op'ing on the first miss. `set_bounds`/
+    /// `set_theme`/`set_font_size` are sync methods (called from Tauri
+    /// command handlers) so they can't `.await` the tokio Mutex — but with
+    /// the dedicated render task now the only *regular* contender for the
+    /// renderer lock (see `init_renderer`), a collision here is rare and the
+    /// render task's own critical section is brief, so a bounded spin is far
+    /// better than dropping a user-triggered resize/theme/font-size change.
+    fn lock_renderer_retry(r: &tokio::sync::Mutex<GpuRenderer>) -> Option<tokio::sync::MutexGuard<'_, GpuRenderer>> {
+        for _ in 0..5 {
+            if let Ok(guard) = r.try_lock() {
+                return Some(guard);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        r.try_lock().ok()
+    }
+
     pub fn set_bounds(&mut self, bounds: &PaneBounds) {
         // Always reposition the window (even if tiny — keeps it in sync with layout).
         if let Some(win) = &self.win {
@@ -630,7 +677,7 @@ impl TerminalPane {
 
         // Use actual font metrics from renderer; fall back to defaults before init.
         let (cell_w, cell_h) = if let Some(r) = &self.renderer {
-            if let Ok(r) = r.try_lock() { (r.font.cell_width, r.font.cell_height) }
+            if let Some(r) = Self::lock_renderer_retry(r) { (r.font.cell_width, r.font.cell_height) }
             else { (8.0f32, 16.0f32) }
         } else { (8.0f32, 16.0f32) };
 
@@ -639,7 +686,7 @@ impl TerminalPane {
 
         // Resize the wgpu surface to match the new pixel dimensions.
         if let Some(r) = &self.renderer {
-            if let Ok(mut renderer) = r.try_lock() {
+            if let Some(mut renderer) = Self::lock_renderer_retry(r) {
                 renderer.resize(bounds.width as u32, bounds.height as u32);
             }
         }
@@ -656,7 +703,7 @@ impl TerminalPane {
 
         // Re-render with the new surface size so the display isn't stale.
         if let Some(r) = &self.renderer {
-            if let Ok(mut renderer) = r.try_lock() {
+            if let Some(mut renderer) = Self::lock_renderer_retry(r) {
                 let snap = self.grid.lock().snapshot();
                 let _ = renderer.render(&snap);
             }
@@ -694,7 +741,7 @@ impl TerminalPane {
     /// swaps the renderer's theme and re-renders the current grid snapshot.
     pub fn set_theme(&mut self, theme: Theme) {
         if let Some(r) = &self.renderer {
-            if let Ok(mut renderer) = r.try_lock() {
+            if let Some(mut renderer) = Self::lock_renderer_retry(r) {
                 renderer.theme = theme;
                 let snap = self.grid.lock().snapshot();
                 let _ = renderer.render(&snap);
@@ -707,7 +754,7 @@ impl TerminalPane {
     /// PTY/grid if they changed (mirrors the resize logic in `set_bounds`).
     pub fn set_font_size(&mut self, font_size: f32) {
         if let Some(r) = &self.renderer {
-            if let Ok(mut renderer) = r.try_lock() {
+            if let Some(mut renderer) = Self::lock_renderer_retry(r) {
                 renderer.set_font_size(font_size);
                 let cell_w = renderer.font.cell_width;
                 let cell_h = renderer.font.cell_height;

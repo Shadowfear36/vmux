@@ -10,7 +10,6 @@ use wgpu::{
     BindGroup, Device, Instance, Queue, RenderPipeline, Sampler,
     Surface, SurfaceConfiguration, Texture,
 };
-use wgpu::util::DeviceExt;
 use raw_window_handle::{
     RawWindowHandle, RawDisplayHandle,
     Win32WindowHandle, WindowsDisplayHandle,
@@ -84,6 +83,19 @@ pub struct GpuRenderer {
     pub font:  FontManager,
     pub theme: Theme,
     pub cursor_blink_on: bool,
+
+    // Persistent CPU-side vertex scratch buffers and GPU buffers, reused
+    // across render() calls instead of being freshly allocated every frame
+    // (previously `create_buffer_init` ran on every single render, uploading
+    // the entire vertex buffer from scratch even for a cursor-only blink
+    // change). Buffers only grow (never shrink) when a frame needs more
+    // capacity than currently allocated, e.g. after a pane is resized larger.
+    bg_verts:        Vec<BgVertex>,
+    glyph_verts:     Vec<GlyphVertex>,
+    bg_buf:          wgpu::Buffer,
+    bg_buf_capacity: usize,   // bytes
+    glyph_buf:          wgpu::Buffer,
+    glyph_buf_capacity: usize,   // bytes
 }
 
 /// Serializes wgpu instance/surface/adapter/device creation across terminal
@@ -98,6 +110,12 @@ impl GpuRenderer {
 
     pub async fn new(hwnd: isize, width: u32, height: u32, theme: Theme, font_size: f32) -> Result<Self> {
         let _init_guard = GPU_INIT_LOCK.lock().await;
+        // Vulkan is included when a driver actually provides it, but DX12 is
+        // the backend vmux relies on being present (guaranteed on Windows
+        // 10/11) — machines with no Vulkan ICD at all (common on VMs/RDP/
+        // older integrated GPUs) will just transparently get DX12 instead.
+        // The resulting "no Vulkan driver found" probe message from wgpu_hal
+        // is expected in that case and silenced in lib.rs's logger setup.
         let instance = Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
             ..Default::default()
@@ -114,14 +132,31 @@ impl GpuRenderer {
             })?
         };
 
-        let adapter = instance
+        let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference:       wgpu::PowerPreference::HighPerformance,
                 compatible_surface:     Some(&surface),
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or_else(|| anyhow::anyhow!("no wgpu adapter found"))?;
+        {
+            Some(a) => a,
+            None => {
+                // No hardware DX12 adapter (e.g. a VM/RDP session with no GPU
+                // passthrough, or a broken driver) — fall back to Microsoft's
+                // WARP software rasterizer rather than failing every terminal
+                // pane outright. Slower, but the app stays usable.
+                log::warn!("no hardware DX12 adapter found; falling back to WARP software rendering");
+                instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference:       wgpu::PowerPreference::HighPerformance,
+                        compatible_surface:     Some(&surface),
+                        force_fallback_adapter: true,
+                    })
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("no wgpu adapter found, including WARP software fallback"))?
+            }
+        };
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -285,6 +320,28 @@ impl GpuRenderer {
 
         let font = FontManager::new(font_size);
 
+        // Size the initial vertex/GPU buffers for this pane's actual starting
+        // dimensions (plus a little slack) so the common case never needs to
+        // grow later; `ensure_buffer_capacity` handles growth if it does.
+        let cols_est = (width as f32 / font.cell_width).ceil() as usize + 1;
+        let rows_est = (height as f32 / font.cell_height).ceil() as usize + 1;
+        // +1 cell of slack for the cursor overlay quad, which shares bg_buf.
+        let cell_est = cols_est * rows_est + 1;
+        let bg_buf_capacity = cell_est * 6 * std::mem::size_of::<BgVertex>();
+        let glyph_buf_capacity = cell_est * 6 * std::mem::size_of::<GlyphVertex>();
+        let bg_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bg_verts"),
+            size:  bg_buf_capacity as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let glyph_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("glyph_verts"),
+            size:  glyph_buf_capacity as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Ok(GpuRenderer {
             device, queue, surface, surface_config, width, height,
             bg_pipeline, glyph_pipeline, glyph_bg,
@@ -293,7 +350,28 @@ impl GpuRenderer {
             atlas_glyphs: HashMap::new(),
             font, theme,
             cursor_blink_on: true,
+            bg_verts: Vec::with_capacity(cell_est * 6),
+            glyph_verts: Vec::with_capacity(cell_est * 6),
+            bg_buf, bg_buf_capacity,
+            glyph_buf, glyph_buf_capacity,
         })
+    }
+
+    /// Recreate `buf` with more capacity if `needed_bytes` exceeds what's
+    /// currently allocated. Grows with 50% slack so repeated small growth
+    /// (e.g. a pane growing one row at a time while dragging) doesn't
+    /// reallocate on every single frame.
+    fn ensure_buffer_capacity(device: &Device, buf: &mut wgpu::Buffer, capacity: &mut usize, needed_bytes: usize, label: &str) {
+        if needed_bytes > *capacity {
+            let new_capacity = ((needed_bytes as f64) * 1.5) as usize;
+            *buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size:  new_capacity as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            *capacity = new_capacity;
+        }
     }
 
     /// Rebuild the font at a new size and reset the glyph atlas packer so
@@ -414,9 +492,9 @@ impl GpuRenderer {
             }
         }
 
-        // ── Build vertex buffers ──────────────────────────────────────────────
-        let mut bg_verts:    Vec<BgVertex>    = Vec::with_capacity(cells.len() * 6);
-        let mut glyph_verts: Vec<GlyphVertex> = Vec::with_capacity(cells.len() * 6);
+        // ── Build vertex buffers (reusing persistent scratch Vecs) ────────────
+        self.bg_verts.clear();
+        self.glyph_verts.clear();
         let atlas_sz = self.atlas_size as f32;
 
         for c in &cells {
@@ -424,7 +502,7 @@ impl GpuRenderer {
             let y0 = c.row as f32 * ch;
 
             // Background cell quad
-            push_bg_quad(&mut bg_verts, x0, y0, x0 + cw, y0 + ch, c.bg, sw, sh);
+            push_bg_quad(&mut self.bg_verts, x0, y0, x0 + cw, y0 + ch, c.bg, sw, sh);
 
             // Glyph quad
             if c.ch != ' ' && c.ch != '\0' {
@@ -435,7 +513,7 @@ impl GpuRenderer {
                     let u1 = (e.px + e.pw) as f32 / atlas_sz;
                     let v1 = (e.py + e.ph) as f32 / atlas_sz;
                     push_glyph_quad(
-                        &mut glyph_verts,
+                        &mut self.glyph_verts,
                         x0, y0, x0 + e.pw as f32, y0 + e.ph as f32,
                         u0, v0, u1, v1,
                         c.fg, sw, sh,
@@ -450,7 +528,7 @@ impl GpuRenderer {
             let cursor_col = [cc[0] as f32 / 255.0, cc[1] as f32 / 255.0, cc[2] as f32 / 255.0, 0.75];
             let cx = snapshot.cursor_col as f32 * cw;
             let cy = snapshot.cursor_row as f32 * ch;
-            push_bg_quad(&mut bg_verts, cx, cy, cx + cw, cy + ch, cursor_col, sw, sh);
+            push_bg_quad(&mut self.bg_verts, cx, cy, cx + cw, cy + ch, cursor_col, sw, sh);
         }
 
         // ── GPU draw ──────────────────────────────────────────────────────────
@@ -468,20 +546,16 @@ impl GpuRenderer {
             a: 1.0,
         };
 
-        let bg_buf = (!bg_verts.is_empty()).then(|| {
-            self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label:    Some("bg_verts"),
-                contents: bytemuck::cast_slice(&bg_verts),
-                usage:    wgpu::BufferUsages::VERTEX,
-            })
-        });
-        let glyph_buf = (!glyph_verts.is_empty()).then(|| {
-            self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label:    Some("glyph_verts"),
-                contents: bytemuck::cast_slice(&glyph_verts),
-                usage:    wgpu::BufferUsages::VERTEX,
-            })
-        });
+        if !self.bg_verts.is_empty() {
+            let needed = self.bg_verts.len() * std::mem::size_of::<BgVertex>();
+            Self::ensure_buffer_capacity(&self.device, &mut self.bg_buf, &mut self.bg_buf_capacity, needed, "bg_verts");
+            self.queue.write_buffer(&self.bg_buf, 0, bytemuck::cast_slice(&self.bg_verts));
+        }
+        if !self.glyph_verts.is_empty() {
+            let needed = self.glyph_verts.len() * std::mem::size_of::<GlyphVertex>();
+            Self::ensure_buffer_capacity(&self.device, &mut self.glyph_buf, &mut self.glyph_buf_capacity, needed, "glyph_verts");
+            self.queue.write_buffer(&self.glyph_buf, 0, bytemuck::cast_slice(&self.glyph_verts));
+        }
 
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -498,17 +572,17 @@ impl GpuRenderer {
                 ..Default::default()
             });
 
-            if let Some(ref buf) = bg_buf {
+            if !self.bg_verts.is_empty() {
                 pass.set_pipeline(&self.bg_pipeline);
-                pass.set_vertex_buffer(0, buf.slice(..));
-                pass.draw(0..bg_verts.len() as u32, 0..1);
+                pass.set_vertex_buffer(0, self.bg_buf.slice(..));
+                pass.draw(0..self.bg_verts.len() as u32, 0..1);
             }
 
-            if let Some(ref buf) = glyph_buf {
+            if !self.glyph_verts.is_empty() {
                 pass.set_pipeline(&self.glyph_pipeline);
                 pass.set_bind_group(0, &self.glyph_bg, &[]);
-                pass.set_vertex_buffer(0, buf.slice(..));
-                pass.draw(0..glyph_verts.len() as u32, 0..1);
+                pass.set_vertex_buffer(0, self.glyph_buf.slice(..));
+                pass.draw(0..self.glyph_verts.len() as u32, 0..1);
             }
         }
 

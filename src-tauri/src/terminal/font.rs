@@ -3,6 +3,33 @@ use cosmic_text::{
     Attrs, Buffer, Color as CosmicColor, Family, FontSystem, Metrics, Shaping, SwashCache,
     Weight, Style,
 };
+use std::sync::OnceLock;
+
+/// `FontSystem::new()` builds a `fontdb::Database` by scanning and parsing
+/// *every* font file installed on the system — cosmic-text's own doc comment
+/// warns this "can take up to a second" in release builds and "up to ten
+/// times longer" (i.e. several seconds) in debug builds, and says the result
+/// "should only be called once, and shared." vmux was instead calling this
+/// fresh on every single new terminal pane (and every font-size change),
+/// which is exactly why creating a terminal felt very slow, especially under
+/// `npm run tauri dev`'s debug build.
+///
+/// `fontdb::Database` is cheap to `Clone` (it clones already-parsed face
+/// metadata — actual glyph outlines are loaded lazily on demand regardless —
+/// no re-scanning or re-parsing of font files), so the fix is to build it
+/// once here and hand out clones.
+static SYSTEM_FONT_DB: OnceLock<fontdb::Database> = OnceLock::new();
+
+fn system_font_db() -> fontdb::Database {
+    SYSTEM_FONT_DB.get_or_init(|| {
+        let mut db = fontdb::Database::new();
+        db.set_monospace_family("Fira Mono");
+        db.set_sans_serif_family("Fira Sans");
+        db.set_serif_family("DejaVu Serif");
+        db.load_system_fonts();
+        db
+    }).clone()
+}
 
 /// Manages font shaping and glyph rasterization via cosmic-text.
 /// Handles ligatures, RTL, emoji, and CJK automatically.
@@ -16,7 +43,7 @@ pub struct FontManager {
 
 impl FontManager {
     pub fn new(font_size: f32) -> Self {
-        let mut font_system = FontSystem::new();
+        let mut font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), system_font_db());
         let line_height = font_size * 1.2;
         let metrics = Metrics::new(font_size, line_height);
 

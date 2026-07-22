@@ -5874,6 +5874,7 @@ dependencies = [
  "bytemuck",
  "cosmic-text",
  "env_logger",
+ "fontdb",
  "git2",
  "log",
  "parking_lot",

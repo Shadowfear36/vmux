@@ -25,7 +25,14 @@ mod window_tracking;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    // wgpu_hal logs an ERROR-level message (visible even at this app's
+    // default error-only log level) whenever it probes for a Vulkan driver
+    // and finds none — harmless (renderer.rs falls back to DX12/WARP
+    // regardless) but alarming-looking, so it's silenced by default here.
+    // RUST_LOG still overrides everything else as documented in CLAUDE.md.
+    env_logger::Builder::from_default_env()
+        .filter_module("wgpu_hal::vulkan", log::LevelFilter::Off)
+        .init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

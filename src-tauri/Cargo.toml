@@ -37,6 +37,9 @@ wgpu = "22"
 
 # Font shaping and rasterization (ligatures, emoji, CJK)
 cosmic-text = "0.12"
+# Same version cosmic-text 0.12 depends on — used directly to build the
+# system font database once and share it (see terminal/font.rs).
+fontdb = "0.16"
 
 # Win32 APIs: child windows, ConPTY, DirectWrite, input
 windows = { version = "0.61", features = [

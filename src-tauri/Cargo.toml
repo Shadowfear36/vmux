@@ -1,6 +1,6 @@
 [package]
 name = "vmux"
-version = "0.1.0"
+version = "0.2.0"
 description = "Windows terminal multiplexer for AI coding agents"
 authors = ["Dylan Rhinehart"]
 license = "MIT"

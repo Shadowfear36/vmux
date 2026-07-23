@@ -53,6 +53,13 @@ pub enum IpcRequest {
     /// Fetch every chunk of a specific conversation, in order — for pulling
     /// the full thread once ContextSearch has found the relevant one.
     ContextGetConversation { conversation_id: String },
+    /// Backs the `vmux [dir]` CLI: find-or-create a workspace for `path`
+    /// and make it active, then bring the main window to front. `path:
+    /// None` (bare `vmux` with no directory) just focuses the window —
+    /// this is also how `vmux`/`vmux <dir>` enforce single-instance: `main.rs`
+    /// tries this request first, and only launches a new GUI process if
+    /// no instance is reachable to send it to.
+    OpenPath { path: Option<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,6 +221,29 @@ async fn handle_client(
         Some(IpcRequest::BrowserEval { js }) => browser_eval(&app, &js).await,
         Some(IpcRequest::ContextSearch { query, top_k }) => context_search(&app, query, top_k).await,
         Some(IpcRequest::ContextGetConversation { conversation_id }) => context_get_conversation(&app, &conversation_id),
+        Some(IpcRequest::OpenPath { path }) => {
+            let result = if let Some(path) = &path {
+                let state = app.state::<Mutex<AppState>>();
+                let mut s = state.lock().unwrap();
+                s.open_path_as_workspace(path)
+            } else {
+                Ok(String::new())
+            };
+            match result {
+                Ok(workspace_id) => {
+                    if !workspace_id.is_empty() {
+                        let _ = app.emit("vmux:workspace-opened", serde_json::json!({ "workspaceId": workspace_id }));
+                    }
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                    IpcResponse::Ok
+                }
+                Err(e) => IpcResponse::Error(e.to_string()),
+            }
+        }
     };
 
     write_framed(&mut w, &response).await?;

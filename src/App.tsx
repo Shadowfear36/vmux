@@ -222,6 +222,20 @@ export default function App() {
     return () => { unsub.then(f => f()); };
   }, []);
 
+  // `vmux <dir>` attaching to this already-running instance (see main.rs/
+  // ipc.rs's OpenPath) — the workspace was just created/found backend-side,
+  // so refresh the list before switching to it.
+  useEffect(() => {
+    const unsub = listen<{ workspaceId: string }>(
+      'vmux:workspace-opened',
+      async ({ payload }) => {
+        await useStore.getState().loadWorkspaces();
+        await useStore.getState().setActiveWorkspace(payload.workspaceId);
+      }
+    );
+    return () => { unsub.then(f => f()); };
+  }, []);
+
   // ── Claude Code hook events (via notify file watcher) ───────────────────
   useEffect(() => {
     const unsub = listen<{ terminalId: string; event: string; data: any }>(

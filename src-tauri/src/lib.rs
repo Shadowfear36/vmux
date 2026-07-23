@@ -13,7 +13,7 @@ mod embeddings;
 mod rag;
 mod worktree;
 mod settings;
-mod ipc;
+pub mod ipc;
 mod agent_skills;
 
 use std::sync::Mutex;
@@ -24,7 +24,7 @@ use state::AppState;
 mod window_tracking;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run(initial_path: Option<String>) {
     // wgpu_hal logs an ERROR-level message (visible even at this app's
     // default error-only log level) whenever it probes for a Vulkan driver
     // and finds none — harmless (renderer.rs falls back to DX12/WARP
@@ -38,7 +38,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             let data_dir = app.path().app_data_dir()
                 .expect("failed to get app data dir");
             std::fs::create_dir_all(&data_dir)?;
@@ -46,11 +46,22 @@ pub fn run() {
             // Get the main window HWND so we can parent native terminal windows to it
             let main_hwnd = get_main_hwnd(app);
 
-            let state = AppState::new(data_dir.to_str().unwrap(), main_hwnd)
+            let mut state = AppState::new(data_dir.to_str().unwrap(), main_hwnd)
                 .expect("failed to init app state");
             // Apply the persisted prefix key to the native WndProc immediately —
             // update_settings only updates it on a later settings change.
             terminal::window::set_prefix_vk(commands::prefix_key_to_vk(&state.settings.prefix_key));
+
+            // `vmux <dir>` on a cold launch (no existing instance to attach
+            // to via IPC — see main.rs) seeds the initial workspace here,
+            // using the same find-or-create logic the IPC handler uses for
+            // an already-running instance (ipc.rs's OpenPath).
+            if let Some(path) = &initial_path {
+                if let Err(e) = state.open_path_as_workspace(path) {
+                    log::warn!("failed to open initial path {path}: {e}");
+                }
+            }
+
             app.manage(Mutex::new(state));
 
             // Subclass the main window to track moves and reposition terminal popups

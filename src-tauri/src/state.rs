@@ -50,4 +50,26 @@ impl AppState {
             settings,
         })
     }
+
+    /// Find-or-create a workspace pointed at `path` and make it active —
+    /// the shared logic behind `vmux <dir>` (see `main.rs`/`ipc.rs`),
+    /// whether that lands on a fresh launch or an already-running instance
+    /// via the IPC pipe. Reuses an existing workspace with a matching
+    /// `directory` instead of creating a duplicate on repeated calls.
+    /// Returns the workspace ID.
+    pub fn open_path_as_workspace(&mut self, path: &str) -> anyhow::Result<String> {
+        if let Some(existing) = self.workspaces.list().into_iter().find(|w| w.directory.as_deref() == Some(path)) {
+            self.workspaces.set_active(&existing.id);
+            return Ok(existing.id);
+        }
+
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+        let ws = self.workspaces.create_workspace(&name)?;
+        self.workspaces.set_workspace_directory(&ws.id, Some(path))?;
+        self.workspaces.set_active(&ws.id);
+        Ok(ws.id)
+    }
 }

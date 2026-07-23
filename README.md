@@ -10,6 +10,8 @@ Download the latest installer (`vmux_x.y.z_x64-setup.exe`) from the [Releases pa
 
 The installer is currently unsigned, so Windows SmartScreen will show a warning on first run — click "More info" → "Run anyway".
 
+Once installed, run `vmux <dir>` from any terminal to open (or switch to) a workspace for that directory — like `code <dir>`. vmux is single-instance: this attaches to an already-running vmux and brings it to front rather than opening a second window; bare `vmux` with no argument just focuses the existing instance (or launches fresh if nothing's running).
+
 ## Why vmux?
 
 Traditional terminal multiplexers (tmux, screen) don't really exist on Windows. WSL workarounds are clunky. Windows Terminal is great for basic use but lacks the multiplexing, agent awareness, and integrated tooling that running several AI coding agents at once demands.

@@ -19,8 +19,16 @@
 
 !include "WinMessages.nsh"
 
+; Official Vim-for-Windows release used by the optional "install Vim too?"
+; prompt below (see MaybeInstallVim) — vmux defaults to `vim` for opening
+; files from the file tree, which silently does nothing useful if it's not
+; on PATH. Bumped manually now and then; check
+; https://github.com/vim/vim-win32-installer/releases for the current one.
+!define VIM_INSTALLER_URL "https://github.com/vim/vim-win32-installer/releases/download/v9.2.0838/gvim_9.2.0838_x64_signed.exe"
+
 !macro NSIS_HOOK_POSTINSTALL
   Call AddInstDirToPath
+  Call MaybeInstallVim
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
@@ -48,6 +56,35 @@ Function AddInstDirToPath
   WriteRegExpandStr HKCU "Environment" "Path" "$0"
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
   AddInstDirToPath_done:
+FunctionEnd
+
+; Optional: offer to install Vim (vmux's default file-tree "open file"
+; command) via the official Windows installer, downloaded fresh from
+; vim.org's GitHub releases rather than bundled — keeps our own installer
+; small and always fetches whatever's current at install time. Uses
+; NSISdl, which ships with NSIS itself (no extra plugin dependency, same
+; reasoning as avoiding StrFunc.nsh above). `/S` for silent installation
+; is NSIS's own convention (vim-win32-installer is itself NSIS-built) —
+; not separately documented by the vim project, so worth confirming this
+; still silent-installs cleanly next time VIM_INSTALLER_URL is bumped.
+Function MaybeInstallVim
+  MessageBox MB_YESNO|MB_ICONQUESTION \
+    "Install Vim too? vmux uses it by default to open files from the file tree (change this anytime in Settings). This downloads the official installer from vim.org's GitHub releases (~10MB)." \
+    IDNO MaybeInstallVim_done
+
+  SetOutPath "$TEMP"
+  NSISdl::download "${VIM_INSTALLER_URL}" "$TEMP\vmux_gvim_installer.exe"
+  Pop $0
+  StrCmp $0 "success" 0 MaybeInstallVim_failed
+    ExecWait '"$TEMP\vmux_gvim_installer.exe" /S'
+    Delete "$TEMP\vmux_gvim_installer.exe"
+    Goto MaybeInstallVim_done
+
+  MaybeInstallVim_failed:
+    MessageBox MB_OK|MB_ICONEXCLAMATION \
+      "Could not download Vim (no internet access right now, or vim.org's GitHub releases are unreachable). You can install it manually later from vim.org — vmux's Settings panel also lets you use a different editor command instead."
+
+  MaybeInstallVim_done:
 FunctionEnd
 
 Function un.RemoveInstDirFromPath

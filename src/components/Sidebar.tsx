@@ -380,9 +380,7 @@ export function TerminalMetaBar({ terminalId, onClose, onDragStart }: TerminalMe
   const terminal = useStore(s => s.terminals[terminalId]);
   const clearNotification = useStore(s => s.clearNotification);
   const draggingTerminalId = useStore(s => s.draggingTerminalId);
-  const dropPaneOnTarget = useStore(s => s.dropPaneOnTarget);
   const [git, setGit] = useState<GitMeta | null>(null);
-  const [dropHover, setDropHover] = useState<'left' | 'right' | 'top' | 'bottom' | null>(null);
 
   useEffect(() => {
     if (terminal?.working_dir) {
@@ -402,7 +400,6 @@ export function TerminalMetaBar({ terminalId, onClose, onDragStart }: TerminalMe
   if (!terminal) return null;
 
   const isDragSource = draggingTerminalId === terminalId;
-  const isDropTarget = draggingTerminalId !== null && !isDragSource;
 
   return (
     <div className={`terminal-meta-bar ${terminal.has_notification ? 'terminal-meta-notified' : ''} ${isDragSource ? 'terminal-meta-drag-source' : ''}`}>
@@ -457,24 +454,6 @@ export function TerminalMetaBar({ terminalId, onClose, onDragStart }: TerminalMe
           title="Close terminal"
         >×</button>
       )}
-
-      {/* Drop zones: left and right halves of the meta bar, shown during drag */}
-      {isDropTarget && (
-        <>
-          <div
-            className={`pane-drop-zone pane-drop-left ${dropHover === 'left' ? 'pane-drop-hover' : ''}`}
-            onPointerEnter={() => setDropHover('left')}
-            onPointerLeave={() => setDropHover(null)}
-            onPointerUp={() => { dropPaneOnTarget(terminalId, 'left'); setDropHover(null); }}
-          />
-          <div
-            className={`pane-drop-zone pane-drop-right ${dropHover === 'right' ? 'pane-drop-hover' : ''}`}
-            onPointerEnter={() => setDropHover('right')}
-            onPointerLeave={() => setDropHover(null)}
-            onPointerUp={() => { dropPaneOnTarget(terminalId, 'right'); setDropHover(null); }}
-          />
-        </>
-      )}
     </div>
   );
 }
@@ -489,11 +468,8 @@ interface BrowserMetaBarProps {
 /** Same drag-handle/close-button/drop-zone chrome as TerminalMetaBar, sized for a browser pane. */
 export function BrowserMetaBar({ browserId, title, onClose, onDragStart }: BrowserMetaBarProps) {
   const draggingTerminalId = useStore(s => s.draggingTerminalId);
-  const dropPaneOnTarget = useStore(s => s.dropPaneOnTarget);
-  const [dropHover, setDropHover] = useState<'left' | 'right' | null>(null);
 
   const isDragSource = draggingTerminalId === browserId;
-  const isDropTarget = draggingTerminalId !== null && !isDragSource;
 
   return (
     <div className={`terminal-meta-bar ${isDragSource ? 'terminal-meta-drag-source' : ''}`}>
@@ -516,23 +492,6 @@ export function BrowserMetaBar({ browserId, title, onClose, onDragStart }: Brows
           onClick={onClose}
           title="Close browser"
         >×</button>
-      )}
-
-      {isDropTarget && (
-        <>
-          <div
-            className={`pane-drop-zone pane-drop-left ${dropHover === 'left' ? 'pane-drop-hover' : ''}`}
-            onPointerEnter={() => setDropHover('left')}
-            onPointerLeave={() => setDropHover(null)}
-            onPointerUp={() => { dropPaneOnTarget(browserId, 'left'); setDropHover(null); }}
-          />
-          <div
-            className={`pane-drop-zone pane-drop-right ${dropHover === 'right' ? 'pane-drop-hover' : ''}`}
-            onPointerEnter={() => setDropHover('right')}
-            onPointerLeave={() => setDropHover(null)}
-            onPointerUp={() => { dropPaneOnTarget(browserId, 'right'); setDropHover(null); }}
-          />
-        </>
       )}
     </div>
   );

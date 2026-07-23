@@ -215,22 +215,17 @@
 }
 .pane-close-btn:hover { color: #f7768e; }
 
-/* Drop zones — cover the full meta bar in two halves during a drag */
-.pane-drop-zone {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 50%;
-  z-index: 10;
-  transition: background 0.1s;
-}
-.pane-drop-left  { left: 0; cursor: w-resize; }
-.pane-drop-right { right: 0; cursor: e-resize; }
-
-.pane-drop-hover {
+/* VS Code-style drop preview — a single overlay (see PaneDragController in
+   App.tsx) showing exactly the half of the hovered pane the dragged pane
+   will occupy on drop. Position/size are set inline per-drag; this just
+   styles the rectangle itself. */
+.pane-drop-preview {
+  pointer-events: none;
+  z-index: 1000;
   background: #7aa2f733;
   outline: 2px solid #7aa2f7;
   outline-offset: -2px;
+  transition: left 0.06s, top 0.06s, width 0.06s, height 0.06s;
 }
 
 .notification-badge {

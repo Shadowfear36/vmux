@@ -750,6 +750,22 @@ impl TerminalPane {
                         grid_inp.lock().start_selection(col, row);
                         dirty_inp.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
+                    WindowMessage::SelectionStartWord(x, y) => {
+                        let (col, row) = {
+                            let r = renderer_inp.lock().await;
+                            pixel_to_cell(x, y, r.font.cell_width, r.font.cell_height)
+                        };
+                        grid_inp.lock().start_selection_word(col, row);
+                        dirty_inp.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    WindowMessage::SelectionStartLine(x, y) => {
+                        let (col, row) = {
+                            let r = renderer_inp.lock().await;
+                            pixel_to_cell(x, y, r.font.cell_width, r.font.cell_height)
+                        };
+                        grid_inp.lock().start_selection_line(col, row);
+                        dirty_inp.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     WindowMessage::SelectionUpdate(x, y) => {
                         let (col, row) = {
                             let r = renderer_inp.lock().await;

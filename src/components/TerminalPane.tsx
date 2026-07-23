@@ -25,7 +25,6 @@ export function TerminalPane({ terminalId, isFocused, onFocus }: Props) {
   const hideTerminal = useStore(s => s.hideTerminal);
   const closeTerminal = useStore(s => s.closeTerminal);
   const startPaneDrag = useStore(s => s.startPaneDrag);
-  const endPaneDrag = useStore(s => s.endPaneDrag);
   const draggingTerminalId = useStore(s => s.draggingTerminalId);
 
   // ── Focus tracking ─────────────────────────────────────────────────────────
@@ -150,20 +149,23 @@ export function TerminalPane({ terminalId, isFocused, onFocus }: Props) {
     };
   }, [reportBounds]);
 
+  // The actual drag lifecycle (tracking the pointer across panes, showing the
+  // VS Code-style drop preview, and dropping) is handled globally by
+  // <PaneDragController> in App.tsx — it can't be scoped to one component
+  // since the pointer moves over *other* panes' native HWND surfaces, which
+  // swallow normal DOM hover events. This just starts the drag.
   const handleDragStart = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     startPaneDrag(terminalId);
-    const handlePointerUp = () => {
-      endPaneDrag();
-      window.removeEventListener('pointerup', handlePointerUp);
-    };
-    window.addEventListener('pointerup', handlePointerUp);
-  }, [terminalId, startPaneDrag, endPaneDrag]);
+  }, [terminalId, startPaneDrag]);
 
   const isDragSource = draggingTerminalId === terminalId;
 
   return (
-    <div className={`terminal-pane-wrapper ${isFocused ? 'terminal-pane-focused' : ''} ${isDragSource ? 'terminal-pane-drag-source' : ''}`}>
+    <div
+      className={`terminal-pane-wrapper ${isFocused ? 'terminal-pane-focused' : ''} ${isDragSource ? 'terminal-pane-drag-source' : ''}`}
+      data-pane-id={terminalId}
+    >
       <TerminalMetaBar
         terminalId={terminalId}
         onClose={() => closeTerminal(terminalId)}

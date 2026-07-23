@@ -135,6 +135,21 @@ impl TermGrid {
         self.term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
     }
 
+    /// Begin a word selection (double-click) at the given cell — selects the
+    /// full word under the cursor and extends word-by-word as the selection
+    /// is dragged, using alacritty's own word-boundary logic.
+    pub fn start_selection_word(&mut self, col: usize, row: usize) {
+        let point = Point::new(Line(row as i32), Column(col));
+        self.term.selection = Some(Selection::new(SelectionType::Semantic, point, Side::Left));
+    }
+
+    /// Begin a line selection (triple-click) at the given cell — selects the
+    /// full line and extends line-by-line as the selection is dragged.
+    pub fn start_selection_line(&mut self, col: usize, row: usize) {
+        let point = Point::new(Line(row as i32), Column(col));
+        self.term.selection = Some(Selection::new(SelectionType::Lines, point, Side::Left));
+    }
+
     /// Extend the in-progress selection to the given cell.
     pub fn update_selection(&mut self, col: usize, row: usize) {
         if let Some(sel) = &mut self.term.selection {

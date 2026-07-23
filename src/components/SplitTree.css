@@ -28,7 +28,12 @@
 
 .split-divider {
   flex-shrink: 0;
-  background: #292e42;
+  /* Resting color needs to be visibly distinct from both the app background
+     (#1a1b26) and the terminal pane's own unfocused border (#292e42) —
+     otherwise a pane boundary has no stable visual anchor at all except
+     while actively hovering/dragging the divider (which briefly turns the
+     accent blue below), and panes blur together. */
+  background: #414868;
   transition: background 0.15s;
   z-index: 1;
 }

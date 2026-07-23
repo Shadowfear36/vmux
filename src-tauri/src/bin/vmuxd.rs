@@ -134,8 +134,17 @@ fn spawn_session(
 
     // No real VT parser here (that's alacritty_terminal's job in the real
     // app once the pane is attached) — reply to the shell's initial cursor
-    // position query so it doesn't block waiting for a response.
-    let _ = writer.write_all(b"\x1b[24;1R");
+    // position query so it doesn't block waiting for a response. Report the
+    // top-left corner (1;1), not some fixed row like 24 — the daemon spawns
+    // at a small placeholder size (see spawn_maybe_daemon's initial 80x24)
+    // that gets resized to the pane's real size moments later, and cmd.exe
+    // uses this reply to seed its own idea of "current row" before that
+    // resize arrives. Reporting a low/fixed row (e.g. 24, the bottom of a
+    // 24-row screen) made cmd.exe think it already started near the bottom
+    // of the console, so once resized taller its banner painted well below
+    // row 0 — a large blank gap at the top of every daemon-backed pane.
+    // Reporting 1;1 keeps it anchored at the top regardless of final size.
+    let _ = writer.write_all(b"\x1b[1;1R");
 
     let scrollback: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let (tx, _rx) = broadcast::channel::<Vec<u8>>(1024);

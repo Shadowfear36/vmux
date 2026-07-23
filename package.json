@@ -10,8 +10,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "build:vmuxctl": "cargo build --bin vmuxctl --manifest-path src-tauri/Cargo.toml",
-    "build:vmuxd": "cargo build --bin vmuxd --manifest-path src-tauri/Cargo.toml",
-    "build:sidecars": "node scripts/build-sidecars.mjs"
+    "build:vmuxd": "node scripts/kill-vmuxd.mjs && cargo build --bin vmuxd --manifest-path src-tauri/Cargo.toml",
+    "build:sidecars": "node scripts/kill-vmuxd.mjs && node scripts/build-sidecars.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",

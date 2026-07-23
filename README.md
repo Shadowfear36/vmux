@@ -66,7 +66,7 @@ All shortcuts use the `Ctrl-A` prefix (like tmux/screen), rebindable to any lett
 ## Features
 
 ### Terminal Multiplexing
-Split your terminal any way you want. Side-by-side splits for comparing output, stacked splits for monitoring. Drag panes to reorder them. Each pane is an independent ConPTY session with full VT100/xterm compatibility.
+Split your terminal any way you want. Side-by-side splits for comparing output, stacked splits for monitoring. Drag panes to reorder them. Each pane is an independent ConPTY session with full VT100/xterm compatibility. Click-drag selects a range, double-click selects a word, triple-click selects a line — all extend by that same granularity as you drag, and `Ctrl+Shift+C` copies the selection.
 
 ### Workspaces
 Organize your work into persistent workspaces. Each workspace has its own tabs, panes, and layout. Switch between projects instantly. Everything is saved to SQLite and restored on next launch.

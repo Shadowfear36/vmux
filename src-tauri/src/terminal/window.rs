@@ -23,7 +23,7 @@ use windows::{
 };
 use std::io::Write;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, AtomicU8, Ordering};
 use tokio::sync::mpsc;
 use tauri::AppHandle;
 
@@ -51,6 +51,14 @@ struct WndProcData {
     pty_input_tx: std::sync::mpsc::Sender<Vec<u8>>,
     /// Whether a left-button text-selection drag is in progress.
     dragging: AtomicBool,
+    /// Multi-click tracking for word/line selection (double/triple-click).
+    /// Win32 has no native "triple click" message, so this is tracked
+    /// manually rather than relying on WM_LBUTTONDBLCLK (CS_DBLCLKS) for
+    /// consistency between the double- and triple-click cases.
+    last_click_ms: AtomicU32,
+    last_click_x: AtomicI32,
+    last_click_y: AtomicI32,
+    click_count: AtomicU8,
 }
 
 #[derive(Debug)]
@@ -70,6 +78,10 @@ pub enum WindowMessage {
     PrefixDeactivated,
     /// Left-button pressed at (x, y) client coords — start a text selection.
     SelectionStart(i32, i32),
+    /// Double-click at (x, y) — start a word selection.
+    SelectionStartWord(i32, i32),
+    /// Triple-click at (x, y) — start a line selection.
+    SelectionStartLine(i32, i32),
     /// Mouse moved to (x, y) client coords while dragging — extend the selection.
     SelectionUpdate(i32, i32),
     /// Ctrl+Shift+C — copy the current selection to the clipboard.
@@ -144,7 +156,24 @@ impl TerminalWindow {
 
 impl Drop for TerminalWindow {
     fn drop(&mut self) {
-        unsafe { let _ = DestroyWindow(self.hwnd); }
+        // Win32 windows are thread-affine: DestroyWindow (like most window
+        // APIs) only works when called from the thread that created the
+        // window. Window *creation* is correctly marshaled to the main
+        // thread via `run_on_main_thread` (see `create_on_main_thread`), but
+        // this Drop runs on whatever thread happened to drop the last
+        // TerminalPane/TerminalWindow value — typically a Tauri command's
+        // thread, not the main thread. Calling DestroyWindow directly here
+        // silently failed on the wrong thread (the return value was
+        // discarded), leaving the native window alive and visible forever
+        // — an orphaned pane still rendering its last frame on top of
+        // everything, even after the pane was "closed" in the UI.
+        //
+        // PostMessage is explicitly documented as safe to call cross-thread
+        // — it just queues the message onto the owning thread's queue.
+        // WM_CLOSE's default handling (DefWindowProc, since we don't
+        // special-case it in the WndProc) calls DestroyWindow itself, from
+        // the correct thread.
+        unsafe { let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); }
     }
 }
 
@@ -179,6 +208,10 @@ unsafe fn create_window(
         msg_tx,
         pty_input_tx: input_tx,
         dragging: AtomicBool::new(false),
+        last_click_ms: AtomicU32::new(0),
+        last_click_x: AtomicI32::new(0),
+        last_click_y: AtomicI32::new(0),
+        click_count: AtomicU8::new(0),
     };
     let data_ptr = Box::into_raw(Box::new(data)) as isize;
     let hinstance = GetModuleHandleW(None)?;
@@ -393,7 +426,11 @@ unsafe extern "system" fn terminal_wnd_proc(
             send_msg(hwnd, WindowMessage::Clicked);
             set_dragging(hwnd, true);
             let (x, y) = mouse_xy(lparam);
-            send_msg(hwnd, WindowMessage::SelectionStart(x, y));
+            match register_click(hwnd, x, y) {
+                3 => send_msg(hwnd, WindowMessage::SelectionStartLine(x, y)),
+                2 => send_msg(hwnd, WindowMessage::SelectionStartWord(x, y)),
+                _ => send_msg(hwnd, WindowMessage::SelectionStart(x, y)),
+            }
             LRESULT(0)
         }
 
@@ -470,6 +507,44 @@ unsafe fn is_dragging(hwnd: HWND) -> bool {
     let ptr = get_data(hwnd);
     if ptr.is_null() { return false; }
     (*ptr).dragging.load(Ordering::Relaxed)
+}
+
+/// Tracks consecutive clicks close in time and position to detect double-
+/// and triple-clicks, using the same system thresholds Explorer/etc. use
+/// (GetDoubleClickTime, SM_CXDOUBLECLK/SM_CYDOUBLECLK). Returns 1, 2, or 3
+/// for this click's position in the sequence; a 4th click in the same spot
+/// wraps back around to 1 (matching most terminals: click/word/line/click...).
+unsafe fn register_click(hwnd: HWND, x: i32, y: i32) -> u8 {
+    let ptr = get_data(hwnd);
+    if ptr.is_null() { return 1; }
+    let data = &*ptr;
+
+    let now = GetMessageTime() as u32;
+    let prev_count = data.click_count.load(Ordering::Relaxed);
+
+    // Only compare against the previous click once we actually have one —
+    // avoids ever diffing against an uninitialized sentinel value (which
+    // overflowed i32 subtraction on the very first click).
+    let next_count = if prev_count == 0 {
+        1
+    } else {
+        let last = data.last_click_ms.load(Ordering::Relaxed);
+        let last_x = data.last_click_x.load(Ordering::Relaxed);
+        let last_y = data.last_click_y.load(Ordering::Relaxed);
+
+        let within_time = now.wrapping_sub(last) <= GetDoubleClickTime();
+        let cx = GetSystemMetrics(SM_CXDOUBLECLK).max(4) / 2;
+        let cy = GetSystemMetrics(SM_CYDOUBLECLK).max(4) / 2;
+        let within_pos = (x - last_x).abs() <= cx && (y - last_y).abs() <= cy;
+
+        if within_time && within_pos { (prev_count % 3) + 1 } else { 1 }
+    };
+
+    data.click_count.store(next_count, Ordering::Relaxed);
+    data.last_click_ms.store(now, Ordering::Relaxed);
+    data.last_click_x.store(x, Ordering::Relaxed);
+    data.last_click_y.store(y, Ordering::Relaxed);
+    next_count
 }
 
 /// Extract (x, y) client coordinates from a mouse message's LPARAM.

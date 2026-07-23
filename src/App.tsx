@@ -400,8 +400,82 @@ export default function App() {
       {showHelp && createPortal(<KeyboardHelp onClose={() => setShowHelp(false)} />, document.body)}
       {showWorktrees && createPortal(<WorktreeList onClose={() => setShowWorktrees(false)} />, document.body)}
       {showSettings && createPortal(<SettingsPanel onClose={toggleSettings} />, document.body)}
+      <PaneDragController />
     </div>
   );
+}
+
+type DropZone = 'left' | 'right' | 'top' | 'bottom';
+interface DropTarget { paneId: string; zone: DropZone; rect: DOMRect }
+
+/**
+ * Owns the entire pane drag-to-rearrange lifecycle (VS Code-style): tracks
+ * the pointer globally, shows a preview of exactly where the dragged pane
+ * will land, and performs the drop. This can't be scoped to the individual
+ * pane components — while dragging, the pointer passes over *other* panes'
+ * native Win32 HWND surfaces (the actual terminal/browser rendering sits
+ * above the WebView2 DOM layer), which would otherwise swallow normal
+ * pointer-enter/leave events before React ever sees them. Using
+ * `document.elementFromPoint` plus a window-level listener sidesteps that
+ * entirely — it's a coordinate lookup into the DOM tree, not something the
+ * native overlay can intercept.
+ */
+function PaneDragController() {
+  const draggingTerminalId = useStore(s => s.draggingTerminalId);
+  const [dropTarget, setDropTargetState] = useState<DropTarget | null>(null);
+  const dropTargetRef = React.useRef<DropTarget | null>(null);
+
+  useEffect(() => {
+    if (!draggingTerminalId) return;
+
+    const setTarget = (t: DropTarget | null) => { dropTargetRef.current = t; setDropTargetState(t); };
+
+    const handleMove = (e: PointerEvent) => {
+      const hit = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)
+        ?.closest<HTMLElement>('[data-pane-id]');
+      if (!hit) { setTarget(null); return; }
+      const paneId = hit.dataset.paneId!;
+      if (paneId === draggingTerminalId) { setTarget(null); return; }
+
+      const rect = hit.getBoundingClientRect();
+      const dx = (e.clientX - rect.left) / rect.width - 0.5;
+      const dy = (e.clientY - rect.top) / rect.height - 0.5;
+      const zone: DropZone = Math.abs(dx) > Math.abs(dy)
+        ? (dx < 0 ? 'left' : 'right')
+        : (dy < 0 ? 'top' : 'bottom');
+      setTarget({ paneId, zone, rect });
+    };
+
+    const handleUp = () => {
+      const target = dropTargetRef.current;
+      if (target) useStore.getState().dropPaneOnTarget(target.paneId, target.zone);
+      useStore.getState().endPaneDrag();
+      setTarget(null);
+    };
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+  }, [draggingTerminalId]);
+
+  if (!dropTarget) return null;
+
+  const { rect, zone } = dropTarget;
+  const style: React.CSSProperties = { position: 'fixed' };
+  if (zone === 'left') {
+    Object.assign(style, { left: rect.left, top: rect.top, width: rect.width / 2, height: rect.height });
+  } else if (zone === 'right') {
+    Object.assign(style, { left: rect.left + rect.width / 2, top: rect.top, width: rect.width / 2, height: rect.height });
+  } else if (zone === 'top') {
+    Object.assign(style, { left: rect.left, top: rect.top, width: rect.width, height: rect.height / 2 });
+  } else {
+    Object.assign(style, { left: rect.left, top: rect.top + rect.height / 2, width: rect.width, height: rect.height / 2 });
+  }
+
+  return createPortal(<div className="pane-drop-preview" style={style} />, document.body);
 }
 
 function WelcomeScreen({ onStart }: { onStart: () => void }) {

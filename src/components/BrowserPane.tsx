@@ -30,7 +30,6 @@ export function BrowserPane({ browserId, initialUrl }: Props) {
   const closeBrowserPane = useStore(s => s.closeBrowserPane);
   const setBrowserPaneTitle = useStore(s => s.setBrowserPaneTitle);
   const startPaneDrag = useStore(s => s.startPaneDrag);
-  const endPaneDrag = useStore(s => s.endPaneDrag);
   const draggingTerminalId = useStore(s => s.draggingTerminalId);
   const isDragSource = draggingTerminalId === browserId;
 
@@ -41,15 +40,13 @@ export function BrowserPane({ browserId, initialUrl }: Props) {
     setBrowserPaneTitle(browserId, title);
   }, [browserId, tabs, activeTabId, urlInput, setBrowserPaneTitle]);
 
+  // The drag lifecycle itself (pointer tracking across panes, drop preview,
+  // and the actual drop) is handled globally by <PaneDragController> in
+  // App.tsx — see TerminalPane.tsx's handleDragStart for why.
   const handleDragStart = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     startPaneDrag(browserId);
-    const handlePointerUp = () => {
-      endPaneDrag();
-      window.removeEventListener('pointerup', handlePointerUp);
-    };
-    window.addEventListener('pointerup', handlePointerUp);
-  }, [browserId, startPaneDrag, endPaneDrag]);
+  }, [browserId, startPaneDrag]);
 
   // ── Bounds ──────────────────────────────────────────────────────────────────
 
@@ -280,7 +277,7 @@ export function BrowserPane({ browserId, initialUrl }: Props) {
   }
 
   return (
-    <div className={`browser-pane-wrapper ${isDragSource ? 'browser-pane-drag-source' : ''}`}>
+    <div className={`browser-pane-wrapper ${isDragSource ? 'browser-pane-drag-source' : ''}`} data-pane-id={browserId}>
       <BrowserMetaBar
         browserId={browserId}
         title={tabs.find(t => t.id === activeTabId)?.title || hostnameOf(urlInput)}

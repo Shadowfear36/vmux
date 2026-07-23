@@ -2,7 +2,8 @@
 name = "vmux"
 version = "0.1.0"
 description = "Windows terminal multiplexer for AI coding agents"
-authors = ["Dylan"]
+authors = ["Dylan Rhinehart"]
+license = "MIT"
 edition = "2021"
 default-run = "vmux"
 

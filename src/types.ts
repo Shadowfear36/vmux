@@ -162,6 +162,9 @@ export interface Settings {
   /** Shell command to open files from the file tree. %f is replaced by the path.
    *  Default (null) falls back to "vim". */
   open_file_command: string | null;
+  /** Whether new terminals/agents are daemon-backed (survive closing vmux).
+   *  See docs/session-reattach-design.md. Defaults to true. */
+  daemon_terminals_enabled: boolean;
 }
 
 export interface GitMeta {

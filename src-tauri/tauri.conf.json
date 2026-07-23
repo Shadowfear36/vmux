@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.dylan.vmux",
   "build": {
-    "beforeDevCommand": "npm run build:vmuxctl && npm run dev",
+    "beforeDevCommand": "npm run build:vmuxctl && npm run build:vmuxd && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build:vmuxctl -- --release && npm run build",
+    "beforeBuildCommand": "npm run build:sidecars && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -26,14 +26,21 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "externalBin": ["binaries/vmuxctl", "binaries/vmuxd"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./installer-hooks.nsh"
+      }
+    }
   },
   "plugins": {
     "shell": {

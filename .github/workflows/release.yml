@@ -1,0 +1,45 @@
+name: Release
+
+# Triggered by pushing a version tag, e.g.:
+#   git tag v0.1.1 && git push origin v0.1.1
+# Bump the version in package.json, src-tauri/tauri.conf.json, and
+# src-tauri/Cargo.toml to match before tagging — tauri-action doesn't do
+# this for you.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'vmux ${{ github.ref_name }}'
+          releaseBody: 'See CHANGELOG or commit history for details.'
+          # Draft so a bad build/tag doesn't go public before you can review
+          # it — publish manually from the GitHub Releases page when ready.
+          releaseDraft: true
+          prerelease: false

@@ -190,20 +190,29 @@ impl TerminalPane {
     }
 
     /// Whether daemon-backed terminals (Phase 2 of the session-reattach
-    /// design doc) are enabled. Checked by `spawn_maybe_daemon` (plain shells)
-    /// and `spawn_agent_maybe_daemon` (agent terminals); workspace restore
-    /// decides per-pane based on a saved `daemon_session_id` instead.
-    pub fn daemon_terminals_enabled() -> bool {
-        std::env::var("VMUX_DAEMON_TERMINALS").is_ok()
+    /// design doc) are enabled for a call site, given the persisted
+    /// `Settings::daemon_terminals_enabled` value. `VMUX_DAEMON_TERMINALS`
+    /// still works as an explicit override for dev/testing regardless of
+    /// the setting — `0`/`false` forces off, any other value forces on;
+    /// unset falls through to `setting`. Checked by `spawn_maybe_daemon`
+    /// (plain shells) and `spawn_agent_maybe_daemon` (agent terminals);
+    /// workspace restore decides per-pane based on a saved
+    /// `daemon_session_id` instead, regardless of this setting.
+    pub fn effective_daemon_enabled(setting: bool) -> bool {
+        match std::env::var("VMUX_DAEMON_TERMINALS") {
+            Ok(v) => !matches!(v.as_str(), "0" | "false" | "False" | "FALSE"),
+            Err(_) => setting,
+        }
     }
 
     /// Like `spawn`, but routes through the `vmuxd` daemon when
-    /// `VMUX_DAEMON_TERMINALS` is set. Async because the daemon path needs
-    /// to connect over a named pipe; the local path just wraps `spawn`
-    /// with no real await, so callers should invoke this without holding
-    /// `Mutex<AppState>` across the `.await` (see `commands::create_terminal`).
-    pub async fn spawn_maybe_daemon(working_dir: Option<String>, shell: &ShellProfile) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
-        if !Self::daemon_terminals_enabled() {
+    /// `daemon_enabled` (computed by the caller via `effective_daemon_enabled`)
+    /// is true. Async because the daemon path needs to connect over a named
+    /// pipe; the local path just wraps `spawn` with no real await, so
+    /// callers should invoke this without holding `Mutex<AppState>` across
+    /// the `.await` (see `commands::create_terminal`).
+    pub async fn spawn_maybe_daemon(working_dir: Option<String>, shell: &ShellProfile, daemon_enabled: bool) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
+        if !daemon_enabled {
             return Self::spawn(working_dir, shell);
         }
 
@@ -388,18 +397,20 @@ impl TerminalPane {
     }
 
     /// Like `spawn_agent`, but routes through the `vmuxd` daemon when
-    /// `VMUX_DAEMON_TERMINALS` is set — so agent sessions (e.g. a long-running
-    /// Claude Code task) survive vmux closing, same as plain shells do via
-    /// `spawn_maybe_daemon`. Async for the same reason as `spawn_maybe_daemon`:
-    /// callers must not hold `Mutex<AppState>` across this `.await`.
+    /// `daemon_enabled` (computed by the caller via `effective_daemon_enabled`)
+    /// is true — so agent sessions (e.g. a long-running Claude Code task)
+    /// survive vmux closing, same as plain shells do via `spawn_maybe_daemon`.
+    /// Async for the same reason as `spawn_maybe_daemon`: callers must not
+    /// hold `Mutex<AppState>` across this `.await`.
     pub async fn spawn_agent_maybe_daemon(
         working_dir: Option<String>,
         agent: &AgentProfile,
         session_name: Option<String>,
         resume_session: Option<String>,
         continue_session: bool,
+        daemon_enabled: bool,
     ) -> Result<(Self, mpsc::UnboundedReceiver<Vec<u8>>)> {
-        if !Self::daemon_terminals_enabled() {
+        if !daemon_enabled {
             return Self::spawn_agent(working_dir, agent, session_name, resume_session, continue_session);
         }
 

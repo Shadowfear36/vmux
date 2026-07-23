@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     println!("[check] spawning via the real TerminalPane::spawn_maybe_daemon (daemon-backed)...");
-    let (mut pane, mut rx) = TerminalPane::spawn_maybe_daemon(None, &shell).await?;
+    let (mut pane, mut rx) = TerminalPane::spawn_maybe_daemon(None, &shell, true).await?;
     println!("[check] pane created: id={} pid={:?}", pane.info.id, pane.info.pid);
 
     let mut got_output = false;

@@ -132,6 +132,20 @@ export function SettingsPanel({ onClose }: Props) {
             Leave empty to use the default (<code>vim</code>).
           </div>
 
+          <label className="settings-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={form.daemon_terminals_enabled}
+              onChange={e => setForm({ ...form, daemon_terminals_enabled: e.target.checked })}
+            />
+            <span className="settings-label" style={{ margin: 0 }}>Daemon-backed sessions (experimental)</span>
+          </label>
+          <div className="settings-hint settings-hint-small">
+            New terminals and agents survive closing vmux — the shell/agent process keeps running in a
+            background <code>vmuxd</code> process and reattaches next time you open vmux. See the "Daemon
+            sessions" section below to inspect or kill them.
+          </div>
+
           <div className="settings-hint">
             Theme and font size apply immediately to every open terminal. Prefix key
             changes apply to new keystrokes right away — existing terminals don't

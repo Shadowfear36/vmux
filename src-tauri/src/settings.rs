@@ -18,7 +18,15 @@ pub struct Settings {
     /// Default: None (falls back to the hardcoded "vim" behaviour preserved for compat).
     #[serde(default)]
     pub open_file_command: Option<String>,
+    /// Whether new terminals/agents should be daemon-backed (survive closing
+    /// vmux — see docs/session-reattach-design.md). Defaults to enabled for
+    /// installed builds; `VMUX_DAEMON_TERMINALS=0`/`=1` still overrides this
+    /// explicitly for dev/testing (see `terminal::effective_daemon_enabled`).
+    #[serde(default = "default_true")]
+    pub daemon_terminals_enabled: bool,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for Settings {
     fn default() -> Self {
@@ -28,6 +36,7 @@ impl Default for Settings {
             font_size: 14.0,
             prefix_key: "a".to_string(),
             open_file_command: None,
+            daemon_terminals_enabled: true,
         }
     }
 }
@@ -106,6 +115,7 @@ mod tests {
             font_size: 16.5,
             prefix_key: "g".to_string(),
             open_file_command: None,
+            daemon_terminals_enabled: false,
         };
         save(db.path(), &custom).unwrap();
 
@@ -114,5 +124,6 @@ mod tests {
         assert_eq!(loaded.default_shell_id.as_deref(), Some("powershell"));
         assert_eq!(loaded.font_size, 16.5);
         assert_eq!(loaded.prefix_key, "g");
+        assert_eq!(loaded.daemon_terminals_enabled, false);
     }
 }

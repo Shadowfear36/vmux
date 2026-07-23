@@ -31,17 +31,19 @@ pub async fn create_terminal(
     working_dir: Option<String>,
     shell_id: Option<String>,
 ) -> Result<TerminalInfo, String> {
-    let shell = {
+    let (shell, daemon_enabled) = {
         let s = state.lock().map_err(|e| e.to_string())?;
-        shell_id
+        let shell = shell_id
             .as_deref()
             .and_then(|id| s.shells.iter().find(|sh| sh.id == id))
             .or_else(|| s.shells.first())
             .ok_or("no shells detected")?
-            .clone()
+            .clone();
+        let daemon_enabled = crate::terminal::TerminalPane::effective_daemon_enabled(s.settings.daemon_terminals_enabled);
+        (shell, daemon_enabled)
     }; // ← AppState lock released before the (possibly daemon-connecting) spawn
 
-    let result = crate::terminal::TerminalPane::spawn_maybe_daemon(working_dir, &shell)
+    let result = crate::terminal::TerminalPane::spawn_maybe_daemon(working_dir, &shell, daemon_enabled)
         .await
         .map_err(|e| e.to_string());
 
@@ -276,17 +278,19 @@ pub async fn create_agent_terminal(
 ) -> Result<TerminalInfo, String> {
     // Hook installation into ~/.claude/settings.json requires explicit user
     // consent — see `install_claude_hooks`. We never do it implicitly here.
-    let agent = {
+    let (agent, daemon_enabled) = {
         let s = state.lock().map_err(|e| e.to_string())?;
-        s.agents.iter().find(|a| a.id == agent_id)
+        let agent = s.agents.iter().find(|a| a.id == agent_id)
             .ok_or_else(|| format!("agent not found: {agent_id}"))?
-            .clone()
+            .clone();
+        let daemon_enabled = crate::terminal::TerminalPane::effective_daemon_enabled(s.settings.daemon_terminals_enabled);
+        (agent, daemon_enabled)
     }; // ← AppState lock released before the (possibly daemon-connecting) spawn
 
     let working_dir_for_watcher = working_dir.clone();
     let result = crate::terminal::TerminalPane::spawn_agent_maybe_daemon(
         working_dir, &agent, session_name, resume_session,
-        continue_session.unwrap_or(false),
+        continue_session.unwrap_or(false), daemon_enabled,
     )
         .await
         .map_err(|e| e.to_string());

@@ -1,20 +1,29 @@
 # vmux
 
-A GPU-accelerated terminal multiplexer for Windows, built for AI coding agents.
+The tmux for Windows — a GPU-accelerated terminal multiplexer built for running multiple AI coding agents side by side.
 
-vmux gives you tmux-style terminal management with a native Windows GUI. Split panes, multiple workspaces, a built-in browser with DevTools, git integration, and first-class support for AI agents like Claude Code, Gemini CLI, Codex, and Aider.
+vmux gives you tmux-style terminal management with a native Windows GUI: split panes, persistent workspaces, git worktrees for running several agents on isolated branches in parallel, a built-in agent-controllable browser, semantic search over past agent conversations, and first-class support for Claude Code, Gemini CLI, Codex, and Aider.
+
+## Installation
+
+Download the latest installer (`vmux_x.y.z_x64-setup.exe`) from the [Releases page](../../releases). It installs per-user (no admin rights needed) and adds `vmux`/`vmuxctl` to your PATH.
+
+The installer is currently unsigned, so Windows SmartScreen will show a warning on first run — click "More info" → "Run anyway".
 
 ## Why vmux?
 
-Traditional terminal multiplexers (tmux, screen) don't exist on Windows. WSL workarounds are clunky. Windows Terminal is great for basic use but lacks the multiplexing, agent awareness, and integrated tooling that AI-assisted development demands.
+Traditional terminal multiplexers (tmux, screen) don't really exist on Windows. WSL workarounds are clunky. Windows Terminal is great for basic use but lacks the multiplexing, agent awareness, and integrated tooling that running several AI coding agents at once demands.
 
 vmux fills this gap:
 
 - **Native Windows performance** -- GPU-rendered terminals via wgpu, not a web canvas
 - **Agent-aware** -- detects Claude, Gemini, Codex, Aider, Amazon Q on PATH and provides one-click launch
+- **Parallel agent workflows** -- spin up an isolated git worktree per agent so several can work on the same repo simultaneously without stepping on each other
+- **Agents can act, not just talk** -- a Claude Code skill lets an agent drive the in-app browser pane itself (navigate, click, read the page) and search vmux's own history of past conversations
 - **Integrated browser** -- built-in WebView2 browser with DevTools, multi-tab support, and agent-controlled navigation via OSC escape sequences
 - **Persistent workspaces** -- your layout survives app restarts, backed by SQLite
 - **Git integration** -- branch/status in the sidebar, full diff viewer panel
+- **Experimental session reattachment** -- daemon-backed terminals/agents can survive closing vmux entirely (opt-in toggle in Settings; see `docs/session-reattach-design.md`)
 
 ## Architecture
 
@@ -30,18 +39,23 @@ Keyboard input goes directly through the Win32 WndProc -- no JavaScript in the i
 
 ## Keyboard Shortcuts
 
-All shortcuts use the `Ctrl-A` prefix (like tmux/screen):
+All shortcuts use the `Ctrl-A` prefix (like tmux/screen), rebindable to any letter in Settings. Some open a second-key "chord" (shown with a PREFIX badge) before doing anything:
 
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl-A c` | Split pane side-by-side |
 | `Ctrl-A -` | Split pane stacked (top/bottom) |
+| `Ctrl-A s` then `1-9` | Split with a specific shell (by position in your shell list); `s` `-` `1-9` splits stacked instead |
+| `Ctrl-A a` then `1-9` | Split with a specific agent (Claude, Gemini, etc.); `a` `-` `1-9` splits stacked instead |
+| `Ctrl-A w` then `n` | New git worktree (prompts for branch name, opens a new tab there) |
+| `Ctrl-A w` then `l` | List/manage existing worktrees |
+| `Ctrl-A w` then `+` | New workspace |
+| `Ctrl-A` + arrow keys | Move focus between panes in that direction |
 | `Ctrl-A d` | Close focused pane |
 | `Ctrl-A t` | New tab |
 | `Ctrl-A n` | Next tab |
 | `Ctrl-A p` | Previous tab |
-| `Ctrl-A w` | New workspace |
-| `Ctrl-A b` | Toggle browser |
+| `Ctrl-A b` | Split in a browser pane |
 | `Ctrl-A f` | Toggle file tree |
 | `Ctrl-A g` | Toggle git diff panel |
 | `Ctrl-A x` | Toggle context panel |
@@ -71,7 +85,7 @@ Click an agent in the sidebar to launch it in the focused terminal's working dir
 When an agent emits an OSC escape sequence (OSC 9/99/777), vmux shows a notification badge on the tab and a glowing ring around the terminal pane. Never miss when an agent needs your attention.
 
 ### Built-in Browser
-Toggle a resizable browser panel with `Ctrl-A b`. Multiple tabs, URL bar, back/forward/reload, and full Chrome DevTools. Agents can control the browser via custom OSC sequences:
+Split in a resizable browser pane with `Ctrl-A b`. Multiple tabs, URL bar, back/forward/reload, and full Chrome DevTools. An agent can drive the page itself — not just fire-and-forget navigation — via the bundled `vmuxctl` CLI (`vmuxctl browser eval "document.title"` returns the real value) or raw OSC sequences:
 
 ```
 \x1b]vmux;browser-open;https://docs.rs\x07
@@ -79,6 +93,17 @@ Toggle a resizable browser panel with `Ctrl-A b`. Multiple tabs, URL bar, back/f
 \x1b]vmux;browser-eval;document.title\x07
 \x1b]vmux;browser-close\x07
 ```
+
+Install the matching Claude Code skill from Settings and Claude Code picks all of this up automatically in any vmux terminal.
+
+### Git Worktrees for Parallel Agents
+`Ctrl-A w n` creates a new git worktree on its own branch and opens a tab there, so you can point multiple agents at the same repo without them colliding on the same working directory. `Ctrl-A w l` lists and manages existing worktrees.
+
+### Context Search Across Past Agent Sessions
+vmux imports Claude Code's own JSONL session transcripts and indexes them for semantic search (embeddings via Voyage AI, an OpenAI-compatible endpoint, or a local no-API-key fallback). The context panel (`Ctrl-A x`) lets you search and re-paste past conversations; the bundled `vmux-context` Claude Code skill lets an agent search its own history the same way, from any terminal.
+
+### Agent Lifecycle Hooks
+Opt-in Claude Code hook integration (Stop/Notification/SessionStart/TaskCompleted) surfaces agent lifecycle events as sidebar notifications, on top of the OSC-based notification badges above. Installing hooks writes to your real, shared `~/.claude/settings.json`, so vmux always asks for explicit consent before doing so — never silently.
 
 ### File Tree
 Toggle with `Ctrl-A f`. Automatically follows the focused terminal's working directory. Updates in real-time as you `cd` around.
@@ -92,6 +117,12 @@ vmux tracks each terminal's current working directory in real-time using two mec
 2. **Windows API polling** via NtQueryInformationProcess as a fallback for cmd.exe
 
 The file tree, git metadata, and agent launch directory all stay in sync automatically.
+
+### Settings
+Theme (Tokyo Night / Catppuccin Mocha), font size, default shell, prefix key remap, file-open command, and the experimental daemon-backed sessions toggle all live in the Settings panel, along with install/status rows for the Claude Code skills and any active daemon sessions.
+
+### Session Reattachment (experimental)
+Terminals and agents can optionally be backed by a small background daemon (`vmuxd`) instead of living entirely inside the vmux process. A daemon-backed session survives closing vmux — the shell/agent process keeps running and reattaches with full scrollback the next time you open vmux. On by default in installed builds; toggle it off in Settings if you'd rather not. See `docs/session-reattach-design.md` for the full design and current limitations.
 
 ## Tech Stack
 
@@ -122,9 +153,12 @@ cargo check --manifest-path src-tauri/Cargo.toml
 # TypeScript type-check
 npx tsc --noEmit
 
-# Production build
+# Production build (produces the NSIS installer under
+# src-tauri/target/release/bundle/nsis/)
 npm run tauri build
 ```
+
+`npm run tauri dev`/`build` also build the `vmuxctl`/`vmuxd` companion binaries automatically (see `scripts/build-sidecars.mjs` for the release path). CI runs on every push (`cargo check`/`cargo test`/`tsc`); pushing a `v*` tag builds and drafts a GitHub Release with the installer attached (`.github/workflows/`).
 
 ## Requirements
 
